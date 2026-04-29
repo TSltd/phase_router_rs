@@ -368,7 +368,6 @@ Contributions are welcome, especially around:
 
 - SIMD optimization
 - real-world benchmarking
-- Python/FFI bindings
 - integration examples
 
 ---
@@ -383,7 +382,7 @@ This Rust implementation delivers:
 
 - **~2× speedup** via a fully fused pipeline with zero matrix materialization
 - **O(n) memory** instead of O(n²)
-- **Embarrassingly parallel** row-independent computation
+- **Highly parallel** row-independent computation
 - **Deterministic, reproducible** routing from any seed
 
 This enables fast, repeatable routing decisions in systems where traditional hashing causes load imbalance and greedy methods are too expensive.
