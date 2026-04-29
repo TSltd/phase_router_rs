@@ -354,6 +354,32 @@ routes = phase_router_rs.phase_router(
 - **Use contiguous arrays**: `np.ascontiguousarray(arr, dtype=np.uint64)` to avoid silent copies
 - Routing cost is amortized by avoiding dropped-token recomputation
 
+### Demo: Phase Router vs Hash Routing
+
+A full interactive demo compares Phase Router against uniform hash routing on 512 experts with heterogeneous capacities:
+
+```bash
+python scripts/demo.py
+```
+
+The demo produces:
+
+1. **Load distribution stats** — mean, std, CV, max/mean for both methods
+2. **Load–capacity correlation** — Phase Router targets ≈ 1.0, hash ≈ 0.0
+3. **Per-expert load tables** — top/bottom experts by capacity with load alignment
+4. **Token survival** after capacity enforcement — Phase Router drops fewer tokens
+5. **Capacity vs Load plot** (`plots/capacity_vs_load.png`) — Phase Router load rises diagonally with capacity; hash stays flat
+6. **Load/Capacity ratio plot** (`plots/load_capacity_ratio.png`) — Phase Router holds a flat ratio (balanced); hash slopes downward (overloads small experts, wastes large ones)
+
+The high-level Python API (`python/phase_router.py`) handles bit-packing and permutation generation so users never touch u64 arrays:
+
+```python
+from phase_router import route, hash_route, compute_loads
+
+routes = route(target_capacities=[1,1,1,8,8,2,2,1], n=8, k=4, seed=42)
+loads = compute_loads(routes, n=8)
+```
+
 ---
 
 ## License
