@@ -3,3 +3,13 @@ Cargo.lock
 moe_results.csv
 plots/
 /.venv
+
+# Python / maturin build artifacts
+__pycache__/
+*.pyc
+*.pyo
+*.so
+*.egg-info/
+dist/
+build/
+*.whl
