@@ -159,7 +159,7 @@ For each row j (parallel):
 - **No intermediate matrices**
 - **O(1) per candidate check**
 - **O(k) memory per row** (reservoir sampling)
-- **Embarrassingly parallel**
+- **Highly parallel**
 
 ---
 
@@ -223,17 +223,6 @@ This enables:
 - efficient implementation without global coordination
 
 The fused formulation reduces memory usage from ( O(N^2) ) to ( O(N) ) and delivers consistent speedups, making it a viable primitive for real-world systems.
-
----
-
-## Code
-
-Rust implementation:
-
-```bash
-cargo build --release
-cargo bench
-```
 
 ---
 
