@@ -380,6 +380,8 @@ routes = route(target_capacities=[1,1,1,8,8,2,2,1], n=8, k=4, seed=42)
 loads = compute_loads(routes, n=8)
 ```
 
+The demo shows that the Phase Router aligns load with capacity, while hashing ignores it.
+
 ---
 
 ## License
