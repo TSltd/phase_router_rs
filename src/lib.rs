@@ -1,4 +1,3 @@
-pub mod bitops;
 pub mod core;
 pub mod python;
 pub mod router;

@@ -3,6 +3,8 @@ use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 
+// Note: legacy matrix-based router removed — fused pipeline is the sole implementation.
+
 /// Fully fused phase router — no intermediate matrices.
 ///
 /// Uses O(n) precomputation, then a single parallel pass with:
@@ -87,58 +89,3 @@ pub fn phase_router(
     routes
 }
 
-/// Legacy matrix-based phase router (kept for benchmarking comparison).
-pub fn phase_router_legacy(
-    s_bits: &[u64],
-    t_bits: &[u64],
-    n: usize,
-    nb_words: usize,
-    k: usize,
-    col_perm_s: &[usize],
-    col_perm_t: &[usize],
-    seed: u64,
-) -> Vec<i32> {
-    let offsets_s = compute_offsets(s_bits, n, nb_words);
-    let offsets_t = compute_offsets(t_bits, n, nb_words);
-
-    let s_final = build_s_final(s_bits, &offsets_s, col_perm_s, n, nb_words);
-    let t_final = build_t_final(t_bits, &offsets_t, col_perm_t, n, nb_words);
-
-    let mut routes = vec![-1i32; n * k];
-
-    routes
-        .par_chunks_mut(k)
-        .enumerate()
-        .for_each_init(
-            || Vec::with_capacity(n),
-            |candidates, (i, row_out)| {
-                candidates.clear();
-
-                let srow = &s_final[i * nb_words..(i + 1) * nb_words];
-                let trow = &t_final[i * nb_words..(i + 1) * nb_words];
-
-                for w in 0..nb_words {
-                    let mut m = srow[w] & trow[w];
-
-                    while m != 0 {
-                        let b = m.trailing_zeros() as usize;
-                        candidates.push(w * 64 + b);
-                        m &= m - 1;
-                    }
-                }
-
-                let mut rng = ChaCha8Rng::seed_from_u64(seed + i as u64);
-                let take = k.min(candidates.len());
-                for j in 0..take {
-                    let remaining = candidates.len() - j;
-                    if remaining > 1 {
-                        let idx = j + rng.gen_range(0..remaining);
-                        candidates.swap(j, idx);
-                    }
-                    row_out[j] = candidates[j] as i32;
-                }
-            },
-        );
-
-    routes
-}

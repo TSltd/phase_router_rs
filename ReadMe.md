@@ -123,19 +123,23 @@ The implementation uses a **fully fused pipeline** that eliminates all intermedi
 ```text
 src/
 ├── lib.rs        # public API + tests
-├── bitops.rs     # bit-level utilities (fill_rotated_bits, permute, rotate)
-├── core.rs       # pipeline stages (offsets, row_ones, cyclic range, legacy builders)
-├── router.rs     # top-level routing (fused + legacy)
+├── core.rs       # pipeline stages (offsets, row_ones, inverse perm, cyclic range)
+├── router.rs     # fused phase router (sole implementation)
 └── python.rs     # PyO3 bindings (thin wrapper, no logic duplication)
 
 benches/
-└── bench.rs      # Criterion benchmarks (fused vs legacy, per-stage)
+└── bench.rs      # Criterion benchmarks (Phase Router vs hash, k sweep)
 
 examples/
-└── bench.rs      # Quick CLI benchmark with timing table
+├── bench.rs      # Quick CLI benchmark (Phase Router vs hash timing)
+└── moe_bench.rs  # MoE capacity-constrained benchmark (4 experiments)
 
-docs/
-└── optimization.md  # Optimization analysis and notes
+python/
+└── phase_router.py  # High-level Python API (bit-packing, analysis)
+
+scripts/
+├── demo.py       # Interactive demo with plots
+└── plot_moe.py   # MoE benchmark plot generation
 ```
 
 ---
@@ -175,7 +179,7 @@ let routes = phase_router(
 
 ## Benchmarks
 
-Run the quick CLI benchmark:
+Run the quick CLI benchmark (Phase Router vs hash routing):
 
 ```bash
 cargo run --release --example bench
@@ -187,21 +191,13 @@ Run Criterion benchmarks with statistical analysis:
 cargo bench
 ```
 
-### Results (Aspire 5750, fused vs legacy matrix-based)
+The benchmarks compare **Phase Router vs uniform hash routing** across sizes (N=64–4096) and fan-out values (k=1–16). Hash routing is ~40× faster in raw throughput, but Phase Router's capacity-aware load distribution avoids token drops — see the [MoE comparison](#-mixture-of-experts-moe-routing) for quality results.
 
-| N    | Fused (min) | Legacy (min) | Speedup  |
-| ---- | ----------- | ------------ | -------- |
-| 64   | 0.037 ms    | 0.126 ms     | **3.4×** |
-| 128  | 0.136 ms    | 0.312 ms     | **2.3×** |
-| 256  | 0.349 ms    | 0.467 ms     | **1.3×** |
-| 512  | 0.905 ms    | 1.578 ms     | **1.7×** |
-| 1024 | 3.333 ms    | 6.280 ms     | **1.9×** |
-| 2048 | 13.07 ms    | 27.49 ms     | **2.1×** |
-| 4096 | 54.14 ms    | 123.9 ms     | **2.3×** |
+Run the full MoE capacity-constrained benchmark:
 
-(Min times shown; median times from Criterion are ~10–20% higher)
-
-The fused implementation avoids constructing ~6–130MB of intermediate matrices (for N=4096), which was the dominant bottleneck in the legacy version.
+```bash
+cargo run --release --example moe_bench
+```
 
 ---
 
@@ -211,8 +207,9 @@ The fused implementation avoids constructing ~6–130MB of intermediate matrices
 - ✅ Deterministic routing
 - ✅ Parallel execution via Rayon
 - ✅ Fully fused pipeline (no intermediate matrices)
-- ✅ ~2–3× speedup over matrix-based approach
-- ✅ Benchmark suite (CLI + Criterion)
+- ✅ Benchmark suite vs hash routing (CLI + Criterion)
+- ✅ Python bindings (PyO3 + maturin)
+- ✅ MoE capacity-constrained benchmarks
 
 ---
 
