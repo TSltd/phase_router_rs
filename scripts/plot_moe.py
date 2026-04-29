@@ -1,197 +1,303 @@
 #!/usr/bin/env python3
 """
-Plot MoE benchmark results: Phase Router vs Hash routing.
+Plot MoE benchmark results: Phase Router vs Uniform Hash.
 
-Reads moe_results.csv and produces comparison charts.
+Four charts matching the four experiments in moe_bench.rs:
+  1. Survival vs Headroom (hero chart)
+  2. Survival vs K
+  3. Survival vs N
+  4. Survival vs Heterogeneity
 
 Usage: python scripts/plot_moe.py
 """
 
 import csv
 import os
-from collections import defaultdict
 
-import matplotlib.pyplot as plt
 import matplotlib
+import matplotlib.pyplot as plt
+import matplotlib.ticker as ticker
 import numpy as np
 
 matplotlib.rcParams['figure.dpi'] = 150
-matplotlib.rcParams['font.size'] = 10
+matplotlib.rcParams['font.size'] = 11
+matplotlib.rcParams['font.family'] = 'sans-serif'
+
+PR_COLOR = '#2196F3'
+HASH_COLOR = '#F44336'
+
 
 def load_csv(path="moe_results.csv"):
     data = []
     with open(path) as f:
         reader = csv.DictReader(f)
         for row in reader:
-            row['n'] = int(row['n'])
-            row['k'] = int(row['k'])
+            row['survival_rate'] = float(row['survival_rate'])
             row['time_ms'] = float(row['time_ms'])
-            row['cv'] = float(row['cv'])
-            row['max_min_ratio'] = float(row['max_min_ratio'])
             data.append(row)
     return data
 
-def plot_cv_vs_n(data, output_dir="plots"):
-    """Figure 1: Load CV vs N, faceted by distribution."""
-    distributions = sorted(set(r['distribution'] for r in data))
-    methods = ['PhaseRouter', 'Hash', 'ModularHash']
-    colors = {'PhaseRouter': '#2196F3', 'Hash': '#F44336', 'ModularHash': '#FF9800'}
-    markers = {'PhaseRouter': 'o', 'Hash': 's', 'ModularHash': '^'}
 
-    fig, axes = plt.subplots(1, len(distributions), figsize=(4 * len(distributions), 4),
-                             sharey=True, squeeze=False)
+def get_exp(data, experiment, method=None):
+    out = [r for r in data if r['experiment'] == experiment]
+    if method:
+        out = [r for r in out if r['method'] == method]
+    return out
 
-    for idx, dist in enumerate(distributions):
-        ax = axes[0][idx]
-        for method in methods:
-            subset = [r for r in data if r['distribution'] == dist and r['method'] == method]
-            subset.sort(key=lambda r: r['n'])
-            ns = [r['n'] for r in subset]
-            cvs = [r['cv'] for r in subset]
-            ax.plot(ns, cvs, marker=markers[method], color=colors[method],
-                    label=method, linewidth=2, markersize=6)
 
-        ax.set_title(dist.replace('_', ' '), fontweight='bold')
-        ax.set_xlabel('N (tokens/experts)')
-        ax.set_xscale('log', base=2)
-        ax.set_xticks([256, 512, 1024, 2048, 4096])
-        ax.get_xaxis().set_major_formatter(matplotlib.ticker.ScalarFormatter())
-        ax.grid(True, alpha=0.3)
-
-    axes[0][0].set_ylabel('Load CV (σ/μ) — lower is better')
-    axes[0][-1].legend(loc='upper right', fontsize=8)
-
-    fig.suptitle('Expert Load Skew: Phase Router vs Hash Routing (k=2)', fontweight='bold', y=1.02)
-    fig.tight_layout()
-
-    os.makedirs(output_dir, exist_ok=True)
-    fig.savefig(f'{output_dir}/moe_cv_vs_n.png', bbox_inches='tight')
-    fig.savefig(f'{output_dir}/moe_cv_vs_n.svg', bbox_inches='tight')
-    print(f"Saved {output_dir}/moe_cv_vs_n.png")
-
-def plot_max_min_bar(data, output_dir="plots"):
-    """Figure 2: Max/min load ratio bar chart for skewed distributions at N=1024."""
-    target_n = 1024
-    skewed_dists = ['zipf_1.0', 'zipf_2.0', 'pareto_80_20']
-    methods = ['PhaseRouter', 'Hash', 'ModularHash']
-    colors = {'PhaseRouter': '#2196F3', 'Hash': '#F44336', 'ModularHash': '#FF9800'}
-
+def plot_headroom_sweep(data, output_dir="plots"):
+    """Figure 1 (HERO): Token survival vs capacity headroom."""
     fig, ax = plt.subplots(figsize=(8, 5))
 
-    x = np.arange(len(skewed_dists))
-    width = 0.25
+    for method, color, marker, label in [
+        ('PhaseRouter', PR_COLOR, 'o', 'Phase Router'),
+        ('UniformHash', HASH_COLOR, 's', 'Uniform Hash'),
+    ]:
+        rows = get_exp(data, 'headroom', method)
+        rows.sort(key=lambda r: float(r['headroom']))
+        xs = [float(r['headroom']) for r in rows]
+        ys = [r['survival_rate'] * 100 for r in rows]
+        ax.plot(xs, ys, marker=marker, color=color, label=label,
+                linewidth=2.5, markersize=8)
 
-    for i, method in enumerate(methods):
-        ratios = []
-        for dist in skewed_dists:
-            row = next((r for r in data
-                       if r['distribution'] == dist
-                       and r['n'] == target_n
-                       and r['method'] == method), None)
-            ratios.append(row['max_min_ratio'] if row else 0)
-
-        bars = ax.bar(x + i * width, ratios, width, label=method, color=colors[method],
-                      edgecolor='white', linewidth=0.5)
-
-        # Value labels
-        for bar, val in zip(bars, ratios):
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.1,
-                    f'{val:.1f}', ha='center', va='bottom', fontsize=8)
-
-    ax.set_ylabel('Max/Min Expert Load Ratio — lower is better')
-    ax.set_title(f'Worst-Case Load Imbalance (N={target_n}, k=2)', fontweight='bold')
-    ax.set_xticks(x + width)
-    ax.set_xticklabels([d.replace('_', ' ') for d in skewed_dists])
-    ax.legend()
-    ax.grid(True, axis='y', alpha=0.3)
-
-    fig.tight_layout()
-    os.makedirs(output_dir, exist_ok=True)
-    fig.savefig(f'{output_dir}/moe_max_min_bar.png', bbox_inches='tight')
-    fig.savefig(f'{output_dir}/moe_max_min_bar.svg', bbox_inches='tight')
-    print(f"Saved {output_dir}/moe_max_min_bar.png")
-
-def plot_time_vs_cv(data, output_dir="plots"):
-    """Figure 3: Speed vs Balance tradeoff scatter (all N, all distributions)."""
-    methods = ['PhaseRouter', 'Hash', 'ModularHash']
-    colors = {'PhaseRouter': '#2196F3', 'Hash': '#F44336', 'ModularHash': '#FF9800'}
-    markers = {'PhaseRouter': 'o', 'Hash': 's', 'ModularHash': '^'}
-
-    fig, ax = plt.subplots(figsize=(8, 6))
-
-    for method in methods:
-        subset = [r for r in data if r['method'] == method]
-        times = [r['time_ms'] for r in subset]
-        cvs = [r['cv'] for r in subset]
-        sizes = [r['n'] / 50 for r in subset]  # scale marker by N
-
-        ax.scatter(times, cvs, c=colors[method], marker=markers[method],
-                   s=sizes, alpha=0.7, label=method, edgecolors='white', linewidth=0.5)
-
-    ax.set_xlabel('Time (ms) — log scale')
-    ax.set_ylabel('Load CV (σ/μ) — lower is better')
-    ax.set_xscale('log')
-    ax.set_title('Speed vs Balance Tradeoff (all N, all distributions, k=2)', fontweight='bold')
-    ax.legend()
+    ax.set_xlabel('Capacity Headroom (1.0 = exact fit)', fontsize=12)
+    ax.set_ylabel('Token Survival Rate (%)', fontsize=12)
+    ax.set_title('Phase Router Needs Less Overprovisioning\n(N=1024, k=2, strong heterogeneous capacity)',
+                 fontweight='bold', fontsize=13)
+    ax.legend(fontsize=11)
     ax.grid(True, alpha=0.3)
+    ax.set_ylim(None, 102)
+    ax.axhline(y=100, color='gray', linestyle=':', alpha=0.5)
 
-    # Annotate the ideal region
-    ax.annotate('← better', xy=(0.02, 0.02), xycoords='axes fraction',
-                fontsize=9, color='gray', style='italic')
+    # Annotate the gap
+    pr_rows = get_exp(data, 'headroom', 'PhaseRouter')
+    h_rows = get_exp(data, 'headroom', 'UniformHash')
+    if pr_rows and h_rows:
+        pr_rows.sort(key=lambda r: float(r['headroom']))
+        h_rows.sort(key=lambda r: float(r['headroom']))
+        # Find midpoint for annotation
+        mid = len(pr_rows) // 2
+        pr_y = pr_rows[mid]['survival_rate'] * 100
+        h_y = h_rows[mid]['survival_rate'] * 100
+        hr_x = float(pr_rows[mid]['headroom'])
+        if pr_y > h_y + 2:
+            ax.annotate(f'  +{pr_y - h_y:.1f}%',
+                        xy=(hr_x, (pr_y + h_y) / 2),
+                        fontsize=10, color='#333', fontweight='bold')
 
     fig.tight_layout()
     os.makedirs(output_dir, exist_ok=True)
-    fig.savefig(f'{output_dir}/moe_speed_vs_balance.png', bbox_inches='tight')
-    fig.savefig(f'{output_dir}/moe_speed_vs_balance.svg', bbox_inches='tight')
-    print(f"Saved {output_dir}/moe_speed_vs_balance.png")
+    fig.savefig(f'{output_dir}/moe_headroom.png', bbox_inches='tight')
+    fig.savefig(f'{output_dir}/moe_headroom.svg', bbox_inches='tight')
+    plt.close(fig)
+    print(f"  → {output_dir}/moe_headroom.png")
 
-def plot_cv_summary(data, output_dir="plots"):
-    """Figure 4: Combined CV comparison — grouped bar chart at N=1024."""
-    target_n = 1024
-    distributions = ['uniform', 'zipf_1.0', 'zipf_2.0', 'pareto_80_20']
-    methods = ['PhaseRouter', 'Hash', 'ModularHash']
-    colors = {'PhaseRouter': '#2196F3', 'Hash': '#F44336', 'ModularHash': '#FF9800'}
 
-    fig, ax = plt.subplots(figsize=(9, 5))
+def plot_k_sweep(data, output_dir="plots"):
+    """Figure 2: Token survival vs fan-out k."""
+    fig, ax = plt.subplots(figsize=(7, 5))
 
-    x = np.arange(len(distributions))
-    width = 0.25
+    for method, color, marker, label in [
+        ('PhaseRouter', PR_COLOR, 'o', 'Phase Router'),
+        ('UniformHash', HASH_COLOR, 's', 'Uniform Hash'),
+    ]:
+        rows = get_exp(data, 'k_sweep', method)
+        rows.sort(key=lambda r: int(r['k']))
+        xs = [int(r['k']) for r in rows]
+        ys = [r['survival_rate'] * 100 for r in rows]
+        ax.plot(xs, ys, marker=marker, color=color, label=label,
+                linewidth=2.5, markersize=8)
 
-    for i, method in enumerate(methods):
-        cvs = []
-        for dist in distributions:
-            row = next((r for r in data
-                       if r['distribution'] == dist
-                       and r['n'] == target_n
-                       and r['method'] == method), None)
-            cvs.append(row['cv'] if row else 0)
+    ax.set_xlabel('Fan-out k (experts per token)', fontsize=12)
+    ax.set_ylabel('Token Survival Rate (%)', fontsize=12)
+    ax.set_title('Phase Router Advantage Grows with Fan-out\n(N=1024, headroom=1.2×, strong hetero)',
+                 fontweight='bold', fontsize=13)
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    ax.set_xscale('log', base=2)
+    ax.set_xticks([1, 2, 4, 8, 16])
+    ax.get_xaxis().set_major_formatter(ticker.ScalarFormatter())
 
-        bars = ax.bar(x + i * width, cvs, width, label=method, color=colors[method],
-                      edgecolor='white', linewidth=0.5)
+    fig.tight_layout()
+    os.makedirs(output_dir, exist_ok=True)
+    fig.savefig(f'{output_dir}/moe_k_sweep.png', bbox_inches='tight')
+    fig.savefig(f'{output_dir}/moe_k_sweep.svg', bbox_inches='tight')
+    plt.close(fig)
+    print(f"  → {output_dir}/moe_k_sweep.png")
 
-        for bar, val in zip(bars, cvs):
-            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.005,
-                    f'{val:.3f}', ha='center', va='bottom', fontsize=7, rotation=45)
 
-    ax.set_ylabel('Load CV (σ/μ) — lower is better')
-    ax.set_title(f'Expert Load Balance by Distribution (N={target_n}, k=2)', fontweight='bold')
-    ax.set_xticks(x + width)
-    ax.set_xticklabels([d.replace('_', ' ') for d in distributions])
-    ax.legend()
+def plot_scale_sweep(data, output_dir="plots"):
+    """Figure 3: Token survival vs N."""
+    fig, ax = plt.subplots(figsize=(7, 5))
+
+    for method, color, marker, label in [
+        ('PhaseRouter', PR_COLOR, 'o', 'Phase Router'),
+        ('UniformHash', HASH_COLOR, 's', 'Uniform Hash'),
+    ]:
+        rows = get_exp(data, 'scale', method)
+        rows.sort(key=lambda r: int(r['n']))
+        xs = [int(r['n']) for r in rows]
+        ys = [r['survival_rate'] * 100 for r in rows]
+        ax.plot(xs, ys, marker=marker, color=color, label=label,
+                linewidth=2.5, markersize=8)
+
+    ax.set_xlabel('N (tokens = experts)', fontsize=12)
+    ax.set_ylabel('Token Survival Rate (%)', fontsize=12)
+    ax.set_title('Phase Router Advantage Across Scale\n(k=2, headroom=1.2×, strong hetero)',
+                 fontweight='bold', fontsize=13)
+    ax.legend(fontsize=11)
+    ax.grid(True, alpha=0.3)
+    ax.set_xscale('log', base=2)
+    ax.set_xticks([256, 512, 1024, 2048, 4096])
+    ax.get_xaxis().set_major_formatter(ticker.ScalarFormatter())
+
+    fig.tight_layout()
+    os.makedirs(output_dir, exist_ok=True)
+    fig.savefig(f'{output_dir}/moe_scale.png', bbox_inches='tight')
+    fig.savefig(f'{output_dir}/moe_scale.svg', bbox_inches='tight')
+    plt.close(fig)
+    print(f"  → {output_dir}/moe_scale.png")
+
+
+def plot_hetero_sweep(data, output_dir="plots"):
+    """Figure 4: Token survival vs heterogeneity level — grouped bar chart."""
+    fig, ax = plt.subplots(figsize=(8, 5))
+
+    scenarios = ['uniform', 'mild_hetero', 'strong_hetero', 'extreme_hetero']
+    scenario_labels = ['Uniform', 'Mild\n(20% @ 3×)', 'Strong\n(10%@8× 20%@2×)', 'Extreme\n(5% @ 16×)']
+
+    x = np.arange(len(scenarios))
+    width = 0.35
+
+    for i, (method, color, label) in enumerate([
+        ('PhaseRouter', PR_COLOR, 'Phase Router'),
+        ('UniformHash', HASH_COLOR, 'Uniform Hash'),
+    ]):
+        rows = get_exp(data, 'hetero', method)
+        vals = []
+        for scen in scenarios:
+            row = next((r for r in rows if r['param'] == scen), None)
+            vals.append(row['survival_rate'] * 100 if row else 0)
+
+        bars = ax.bar(x + i * width - width / 2, vals, width, label=label,
+                      color=color, edgecolor='white', linewidth=0.5)
+
+        for bar, val in zip(bars, vals):
+            ax.text(bar.get_x() + bar.get_width() / 2, bar.get_height() + 0.5,
+                    f'{val:.1f}%', ha='center', va='bottom', fontsize=9)
+
+    ax.set_ylabel('Token Survival Rate (%)', fontsize=12)
+    ax.set_title('Phase Router Advantage Grows with Capacity Heterogeneity\n(N=1024, k=2, headroom=1.2×)',
+                 fontweight='bold', fontsize=13)
+    ax.set_xticks(x)
+    ax.set_xticklabels(scenario_labels, fontsize=10)
+    ax.legend(fontsize=11)
     ax.grid(True, axis='y', alpha=0.3)
+    ax.set_ylim(0, 108)
 
     fig.tight_layout()
     os.makedirs(output_dir, exist_ok=True)
-    fig.savefig(f'{output_dir}/moe_cv_summary.png', bbox_inches='tight')
-    fig.savefig(f'{output_dir}/moe_cv_summary.svg', bbox_inches='tight')
-    print(f"Saved {output_dir}/moe_cv_summary.png")
+    fig.savefig(f'{output_dir}/moe_hetero.png', bbox_inches='tight')
+    fig.savefig(f'{output_dir}/moe_hetero.svg', bbox_inches='tight')
+    plt.close(fig)
+    print(f"  → {output_dir}/moe_hetero.png")
+
+
+def plot_combined(data, output_dir="plots"):
+    """Figure 5: 2×2 combined summary."""
+    fig, axes = plt.subplots(2, 2, figsize=(14, 10))
+
+    methods_cfg = [
+        ('PhaseRouter', PR_COLOR, 'o', 'Phase Router'),
+        ('UniformHash', HASH_COLOR, 's', 'Uniform Hash'),
+    ]
+
+    # (0,0) Headroom
+    ax = axes[0][0]
+    for method, color, marker, label in methods_cfg:
+        rows = sorted(get_exp(data, 'headroom', method), key=lambda r: float(r['headroom']))
+        ax.plot([float(r['headroom']) for r in rows],
+                [r['survival_rate'] * 100 for r in rows],
+                marker=marker, color=color, label=label, linewidth=2, markersize=6)
+    ax.set_xlabel('Capacity Headroom')
+    ax.set_ylabel('Survival (%)')
+    ax.set_title('a) Headroom Sweep', fontweight='bold')
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    ax.axhline(100, color='gray', ls=':', alpha=0.4)
+
+    # (0,1) K sweep
+    ax = axes[0][1]
+    for method, color, marker, label in methods_cfg:
+        rows = sorted(get_exp(data, 'k_sweep', method), key=lambda r: int(r['k']))
+        ax.plot([int(r['k']) for r in rows],
+                [r['survival_rate'] * 100 for r in rows],
+                marker=marker, color=color, label=label, linewidth=2, markersize=6)
+    ax.set_xlabel('Fan-out k')
+    ax.set_ylabel('Survival (%)')
+    ax.set_title('b) K Sweep', fontweight='bold')
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    ax.set_xscale('log', base=2)
+    ax.set_xticks([1, 2, 4, 8, 16])
+    ax.get_xaxis().set_major_formatter(ticker.ScalarFormatter())
+
+    # (1,0) Scale sweep
+    ax = axes[1][0]
+    for method, color, marker, label in methods_cfg:
+        rows = sorted(get_exp(data, 'scale', method), key=lambda r: int(r['n']))
+        ax.plot([int(r['n']) for r in rows],
+                [r['survival_rate'] * 100 for r in rows],
+                marker=marker, color=color, label=label, linewidth=2, markersize=6)
+    ax.set_xlabel('N')
+    ax.set_ylabel('Survival (%)')
+    ax.set_title('c) Scale Sweep', fontweight='bold')
+    ax.legend(fontsize=9)
+    ax.grid(True, alpha=0.3)
+    ax.set_xscale('log', base=2)
+    ax.set_xticks([256, 512, 1024, 2048, 4096])
+    ax.get_xaxis().set_major_formatter(ticker.ScalarFormatter())
+
+    # (1,1) Hetero bar
+    ax = axes[1][1]
+    scenarios = ['uniform', 'mild_hetero', 'strong_hetero', 'extreme_hetero']
+    labels = ['Uniform', 'Mild', 'Strong', 'Extreme']
+    x = np.arange(len(scenarios))
+    w = 0.35
+    for i, (method, color, _, lbl) in enumerate(methods_cfg):
+        rows = get_exp(data, 'hetero', method)
+        vals = []
+        for s in scenarios:
+            row = next((r for r in rows if r['param'] == s), None)
+            vals.append(row['survival_rate'] * 100 if row else 0)
+        ax.bar(x + i * w - w / 2, vals, w, label=lbl, color=color, edgecolor='white')
+    ax.set_ylabel('Survival (%)')
+    ax.set_title('d) Heterogeneity Sweep', fontweight='bold')
+    ax.set_xticks(x)
+    ax.set_xticklabels(labels)
+    ax.legend(fontsize=9)
+    ax.grid(True, axis='y', alpha=0.3)
+    ax.set_ylim(0, 108)
+
+    fig.suptitle('Phase Router vs Hash Routing: Capacity-Constrained MoE',
+                 fontweight='bold', fontsize=14, y=1.01)
+    fig.tight_layout()
+
+    os.makedirs(output_dir, exist_ok=True)
+    fig.savefig(f'{output_dir}/moe_combined.png', bbox_inches='tight')
+    fig.savefig(f'{output_dir}/moe_combined.svg', bbox_inches='tight')
+    plt.close(fig)
+    print(f"  → {output_dir}/moe_combined.png")
+
 
 if __name__ == '__main__':
     data = load_csv()
 
-    plot_cv_vs_n(data)
-    plot_max_min_bar(data)
-    plot_time_vs_cv(data)
-    plot_cv_summary(data)
+    print("Generating plots...")
+    plot_headroom_sweep(data)
+    plot_k_sweep(data)
+    plot_scale_sweep(data)
+    plot_hetero_sweep(data)
+    plot_combined(data)
 
-    print("\nAll plots generated in plots/ directory.")
+    print("\nAll plots saved to plots/ directory.")

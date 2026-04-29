@@ -26,14 +26,13 @@ pub fn phase_router(
     let ones_t = compute_row_ones(t_bits, n, nb_words);
     let inv_perm_s = compute_inverse_perm(col_perm_s);
 
-    // Fused T lookups: t_start[col] = offsets_t[n-1-col], t_len[col] = ones_t[n-1-col]
-    // Eliminates subtraction + indirection in the hot loop
+    // Fused T lookups: t_start[col] = offsets_t[col], t_len[col] = ones_t[col]
+    // Output column `col` directly represents target `col`, with load ∝ capacity.
     let mut t_start = vec![0usize; n];
     let mut t_len = vec![0usize; n];
     for col in 0..n {
-        let ti = n - 1 - col;
-        t_start[col] = offsets_t[ti];
-        t_len[col] = ones_t[ti];
+        t_start[col] = offsets_t[col];
+        t_len[col] = ones_t[col];
     }
 
     let mut routes = vec![-1i32; n * k];

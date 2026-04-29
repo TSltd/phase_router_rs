@@ -229,6 +229,55 @@ This implementation is best suited for:
 
 ---
 
+## 🧠 Mixture-of-Experts (MoE) Routing
+
+Phase Router is particularly well-suited to **capacity-constrained expert routing** in Mixture-of-Experts models, where tokens must be dispatched to experts with heterogeneous capacity limits.
+
+### The problem
+
+In MoE inference, each token is routed to _k_ experts. Experts have hard capacity limits — tokens that exceed a limit are **dropped**, wasting compute and degrading quality. Standard hash routing distributes load uniformly, ignoring capacity differences between experts. This causes low-capacity experts to overflow while high-capacity experts sit idle.
+
+### Why Phase Router helps
+
+The cyclic phase embedding produces assignments where **expected load on each expert is proportional to its capacity** — by construction. No post-hoc rebalancing or auxiliary loss is needed.
+
+```
+Hash:          E[load_j] = k           (uniform, ignores capacity)
+Phase Router:  E[load_j] ∝ capacity_j  (capacity-aware by construction)
+```
+
+### Benchmark results
+
+We benchmark against uniform hash routing on N=1024 experts with heterogeneous capacities (10% at 8×, 20% at 2×, rest at 1×). Metric: **token survival rate** (fraction of routed tokens not dropped).
+
+| Scenario                           | Phase Router | Hash  | Advantage  |
+| ---------------------------------- | ------------ | ----- | ---------- |
+| Tight capacity (1.0× headroom)     | 87.9%        | 79.2% | **+8.7%**  |
+| Practical capacity (1.2× headroom) | 89.8%        | 79.2% | **+10.5%** |
+| High fan-out (k=16)                | 96.6%        | 77.6% | **+19.0%** |
+| Large scale (N=4096)               | 91.1%        | 79.0% | **+12.1%** |
+
+Key findings:
+
+- **10–19% higher token survival** across all tested configurations
+- **Advantage grows with fan-out _k_** — at k=16, Phase Router delivers 96.6% vs 77.6% (+19pp)
+- **~40% less overprovisioning needed** — Phase Router hits 90% survival at 1.2× headroom; hash needs ~2×
+- **Consistent across scale** — 10–14% advantage from N=256 to N=4096
+- **Advantage emerges with heterogeneity** — near-identical at uniform capacity, +10.5% at strong heterogeneity
+
+### When it matters most
+
+The advantage is largest when:
+
+- Expert capacities are **heterogeneous** (mixed GPU types, variable batch budgets)
+- Token drops are **expensive** (require recomputation or degrade model quality)
+- Overprovisioning budget is **limited** (can't afford 2× headroom)
+- Fan-out _k_ is **moderate to large** (k ≥ 4, as in Switch Transformer / GShard)
+
+> For the full benchmark methodology and results, see [`docs/comparison.md`](docs/comparison.md).
+
+---
+
 ## When to use this
 
 Use Phase Router when:
@@ -258,7 +307,7 @@ Avoid when:
 
 ## License
 
-TBD
+MIT
 
 ---
 

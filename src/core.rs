@@ -103,6 +103,8 @@ pub fn build_t_final(
         );
 
     // Phase 2: Parallel transpose (gather pattern)
+    // Normal transpose: column i in T_permuted maps to target i directly.
+    // (Previously used anti-diagonal `n-1-i`, which misaligned load with capacity.)
     let mut out = vec![0u64; n * nb_words];
 
     out.par_chunks_mut(nb_words)
@@ -113,7 +115,7 @@ pub fn build_t_final(
 
             for i in 0..n {
                 if (t_permuted[i * nb_words + j_word] >> j_bit) & 1 == 1 {
-                    let dst_col = n - 1 - i;
+                    let dst_col = i;
                     let dw = dst_col >> 6;
                     let db = dst_col & 63;
                     dst_row[dw] |= 1u64 << db;
