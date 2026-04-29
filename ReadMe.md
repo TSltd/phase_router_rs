@@ -6,7 +6,7 @@ This crate provides a Rust implementation of the **Orthogonal Load-Balanced Inci
 
 ---
 
-## 🚀 What this does
+## What this does
 
 Given two inputs:
 
@@ -27,7 +27,7 @@ such that:
 
 ---
 
-## 🧠 Intuition
+## Intuition
 
 The algorithm:
 
@@ -62,11 +62,15 @@ This produces a **low-skew, degree-weighted routing** without solving a global o
   Fully local, batch computation
 
 - **Zero intermediate matrices**
-  Fused pipeline uses O(n) arithmetic — no bit-packed matrix materialization
+  Fused pipeline — no bit-packed matrix materialization
+
+- **Work proportional to active mass** — iterates only over nonzero row degrees
+
+- **Order-independent behavior** — input ordering does not create geometric hotspots
 
 ---
 
-## 🏗️ Pipeline
+## Pipeline
 
 The implementation uses a **fully fused pipeline** that eliminates all intermediate matrices:
 
@@ -77,22 +81,23 @@ The implementation uses a **fully fused pipeline** that eliminates all intermedi
    - inverse source permutation
 
 2. For each row j (parallel):
-   - iterate over candidate columns via cyclic range
-   - O(1) arithmetic check for intersection
-   - partial Fisher-Yates selection of top-k
+   - Iterate only positions where S'[j,*] = 1 (cyclic interval)
+   - Map positions through inverse permutation
+   - Evaluate T'[j,col] via arithmetic interval test (no matrix lookup)
+   - Reservoir sample up to k matches (O(k) memory)
 ```
 
 ### Design principles
 
-- **No matrix materialization** — S_final, T_final, and transpose are all eliminated
-- **O(1) per candidate** — cyclic range membership via arithmetic, not bit operations
+- **No materialized S′ / T′ matrices** — all phase transforms are evaluated analytically at query time
+- **O(1) per candidate** — intersection reduced to arithmetic interval checks (no bitwise scans)
 - **Memory: O(n)** — only 5 small arrays, no n×n matrices
 - **Embarrassingly parallel** — each row is fully independent
 - **Cache-friendly** — sequential access to small precomputed arrays
 
 ---
 
-## 📦 Crate structure
+## Crate structure
 
 ```text
 src/
@@ -113,7 +118,7 @@ docs/
 
 ---
 
-## 🔧 Usage
+## Usage
 
 ```rust
 use phase_router_rs::router::phase_router;
@@ -146,7 +151,7 @@ let routes = phase_router(
 
 ---
 
-## 📊 Benchmarks
+## Benchmarks
 
 Run the quick CLI benchmark:
 
@@ -164,13 +169,15 @@ cargo bench
 
 | N    | Fused (min) | Legacy (min) | Speedup  |
 | ---- | ----------- | ------------ | -------- |
-| 64   | 0.042 ms    | 0.105 ms     | **2.5×** |
-| 128  | 0.080 ms    | 0.193 ms     | **2.4×** |
-| 256  | 0.279 ms    | 0.477 ms     | **1.7×** |
-| 512  | 0.832 ms    | 1.623 ms     | **2.0×** |
-| 1024 | 3.385 ms    | 6.537 ms     | **1.9×** |
-| 2048 | 13.83 ms    | 28.93 ms     | **2.1×** |
-| 4096 | 60.62 ms    | 126.9 ms     | **2.1×** |
+| 64   | 0.037 ms    | 0.126 ms     | **3.4×** |
+| 128  | 0.136 ms    | 0.312 ms     | **2.3×** |
+| 256  | 0.349 ms    | 0.467 ms     | **1.3×** |
+| 512  | 0.905 ms    | 1.578 ms     | **1.7×** |
+| 1024 | 3.333 ms    | 6.280 ms     | **1.9×** |
+| 2048 | 13.07 ms    | 27.49 ms     | **2.1×** |
+| 4096 | 54.14 ms    | 123.9 ms     | **2.3×** |
+
+(Min times shown; median times from Criterion are ~10–20% higher)
 
 ---
 
@@ -180,18 +187,26 @@ cargo bench
 - ✅ Deterministic routing
 - ✅ Parallel execution via Rayon
 - ✅ Fully fused pipeline (no intermediate matrices)
-- ✅ ~2× speedup over matrix-based approach
+- ✅ ~2–3× speedup over matrix-based approach
 - ✅ Benchmark suite (CLI + Criterion)
 
 ---
 
-## 🚀 Optimizations applied
+## Optimizations applied
 
-- [x] Thread-local buffer reuse via `for_each_init` (eliminated per-row allocations)
-- [x] Fused left-align + rotate (`fill_rotated_bits` — direct cyclic bit-range fill)
-- [x] Parallel `T_final` construction (gather pattern)
-- [x] Candidate vector reuse + partial Fisher-Yates shuffle
-- [x] **Fully fused pipeline** — eliminates all n×n matrices, uses O(1) cyclic range checks
+### Structural optimizations
+
+- Fully fused pipeline — eliminates all n×n matrices
+- Analytical phase evaluation (no S′ / T′ materialization)
+- Reservoir sampling — O(k) memory, no candidate buffer
+
+### Micro-optimizations
+
+- Modulo-free cyclic iteration
+- Branchless cyclic range check
+- Precomputed T lookups
+- Thread-local buffer reuse
+-
 
 ### Remaining opportunities
 
@@ -202,7 +217,7 @@ cargo bench
 
 ---
 
-## 🎯 Target use cases
+## Target use cases
 
 This implementation is best suited for:
 
@@ -214,7 +229,7 @@ This implementation is best suited for:
 
 ---
 
-## 🧠 When to use this
+## When to use this
 
 Use Phase Router when:
 
@@ -231,7 +246,7 @@ Avoid when:
 
 ---
 
-## 📊 Conceptual comparison
+## Conceptual comparison
 
 | Method           | Speed      | Balance  | Deterministic | Global State |
 | ---------------- | ---------- | -------- | ------------- | ------------ |
@@ -241,13 +256,13 @@ Avoid when:
 
 ---
 
-## 📜 License
+## License
 
 TBD
 
 ---
 
-## 🤝 Contributing
+## Contributing
 
 Contributions are welcome, especially around:
 
@@ -258,7 +273,7 @@ Contributions are welcome, especially around:
 
 ---
 
-## 🧾 Summary
+## Summary
 
 Phase Router is:
 
@@ -270,5 +285,7 @@ This Rust implementation delivers:
 - **O(n) memory** instead of O(n²)
 - **Embarrassingly parallel** row-independent computation
 - **Deterministic, reproducible** routing from any seed
+
+This enables fast, repeatable routing decisions in systems where traditional hashing causes load imbalance and greedy methods are too expensive.
 
 ---
