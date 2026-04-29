@@ -454,7 +454,7 @@ Phase Router is:
 
 This Rust implementation delivers:
 
-- \*\*Optimized fully fused pipeline with zero matrix materialization
+- **Optimized** fully fused pipeline with zero matrix materialization
 - **O(n) memory** instead of O(n²)
 - **Highly parallel** row-independent computation
 - **Deterministic, reproducible** routing from any seed

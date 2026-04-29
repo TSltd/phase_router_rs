@@ -2,6 +2,11 @@
 name = "phase_router_rs"
 version = "0.1.0"
 edition = "2021"
+description = "Deterministic capacity-aware routing via cyclic phase arithmetic"
+license = "MIT"
+repository = "https://github.com/TSltd/phase_router_rs"
+keywords = ["routing", "load-balancing", "moe", "deterministic"]
+categories = ["algorithms", "science"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]

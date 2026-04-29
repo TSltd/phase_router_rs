@@ -28,20 +28,3 @@ pub fn compute_inverse_perm(perm: &[usize]) -> Vec<usize> {
     }
     inv
 }
-
-/// Check if `val` lies in the cyclic range [start, start+len) mod n.
-#[inline(always)]
-pub fn in_cyclic_range(val: usize, start: usize, len: usize, n: usize) -> bool {
-    if len == 0 {
-        return false;
-    }
-    if len >= n {
-        return true;
-    }
-    let end = start + len;
-    if end <= n {
-        val >= start && val < end
-    } else {
-        val >= start || val < end - n
-    }
-}
