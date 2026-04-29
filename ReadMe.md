@@ -1,8 +1,8 @@
 # **Phase Router**
 
-A **high-performance, deterministic routing kernel** for capacity-constrained systems, constructing **balanced bipartite routings** using cyclic phase arithmetic.
+A **deterministic, capacity-aware routing kernel** that reduces dropped work in load-balanced systems.
 
-> A lightweight, deterministic alternative to optimal transport under capacity constraints.
+> Trades microseconds of routing for milliseconds of saved compute.
 
 Hashing assumes all targets are equal.
 
@@ -18,6 +18,41 @@ Hash:         76.4% survival
 Phase Router reduces dropped tokens by 10–19% in realistic MoE settings.
 
 This crate provides a Rust implementation of a **phase-based routing algorithm** that distributes uneven workloads across fixed-capacity targets without global coordination.
+
+---
+
+## Why this matters
+
+Hash routing is fast, but blind to capacity.
+
+In capacity-constrained systems (e.g. Mixture-of-Experts):
+
+- Overloaded targets drop work
+- Dropped work wastes compute and degrades quality
+
+Phase Router trades microseconds of routing for fewer dropped tokens.
+
+### The tradeoff
+
+- Hash routing: ~40× faster
+- Phase Router: ~2×–3× fewer dropped tokens
+
+In real systems:
+
+- Routing = microseconds
+- Token processing = milliseconds (GPU)
+
+So avoiding drops is often **cheaper than routing faster**.
+
+### Rule of thumb
+
+Phase Router is beneficial when:
+
+```
+cost_of_dropped_work >> cost_of_routing
+```
+
+This is true in most ML inference and training pipelines.
 
 ---
 
@@ -52,7 +87,8 @@ The algorithm:
 4. **Intersects two transformed matrices**
 5. **Extracts up to `k` connections per row**
 
-This effectively turns routing into intersection of intervals on a circle, rather than matching in a matrix.
+Routing reduces to intersection of intervals on a circle (O(1) per candidate),
+instead of scanning or materializing matrices.
 
 This produces a **low-skew, degree-weighted routing** without solving a global optimization problem.
 
@@ -191,7 +227,13 @@ Run Criterion benchmarks with statistical analysis:
 cargo bench
 ```
 
-The benchmarks compare **Phase Router vs uniform hash routing** across sizes (N=64–4096) and fan-out values (k=1–16). Hash routing is ~40× faster in raw throughput, but Phase Router's capacity-aware load distribution avoids token drops — see the [MoE comparison](#-mixture-of-experts-moe-routing) for quality results.
+The benchmarks compare **Phase Router vs uniform hash routing** across sizes (N=64–4096) and fan-out values (k=1–16).
+
+Hash routing is faster, but Phase Router uses additional compute to align load with capacity.
+
+At small batch sizes the overhead is modest (~1–3×), while at large scale it grows — but this cost is typically outweighed by reduced dropped work in capacity-constrained systems.
+
+See the [MoE comparison](#-mixture-of-experts-moe-routing) for quality results.
 
 Run the full MoE capacity-constrained benchmark:
 
@@ -251,15 +293,17 @@ This implementation is best suited for:
 
 ## Mixture-of-Experts (MoE) Routing
 
-Phase Router is particularly well-suited to **capacity-constrained expert routing** in Mixture-of-Experts models, where tokens must be dispatched to experts with heterogeneous capacity limits.
-
 ### The problem
 
-In MoE inference, each token is routed to _k_ experts. Experts have hard capacity limits — tokens that exceed a limit are **dropped**, wasting compute and degrading quality. Standard hash routing distributes load uniformly, ignoring capacity differences between experts. This causes low-capacity experts to overflow while high-capacity experts sit idle.
+Naive routing wastes capacity.
 
-### Why Phase Router helps
+### The consequence
 
-The cyclic phase embedding produces assignments where **expected load on each expert is proportional to its capacity** — by construction. No post-hoc rebalancing or auxiliary loss is needed.
+Dropped tokens = wasted compute.
+
+### The fix
+
+Phase Router aligns load with capacity by construction.
 
 ```
 Hash:          E[load_j] = k           (uniform, ignores capacity)
@@ -428,11 +472,11 @@ Contributions are welcome, especially around:
 
 Phase Router is:
 
-> A fast, deterministic, low-skew routing primitive built on cyclic phase arithmetic.
+> A fast, deterministic, low-skew routing primitive built on cyclic phase arithmetic which aligns load with capacity — without coordination or optimization..
 
 This Rust implementation delivers:
 
-- **~2× speedup** via a fully fused pipeline with zero matrix materialization
+- \*\*Optimized fully fused pipeline with zero matrix materialization
 - **O(n) memory** instead of O(n²)
 - **Highly parallel** row-independent computation
 - **Deterministic, reproducible** routing from any seed
