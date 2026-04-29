@@ -3,8 +3,6 @@ use rand::prelude::*;
 use rand_chacha::ChaCha8Rng;
 use rayon::prelude::*;
 
-// Note: legacy matrix-based router removed — fused pipeline is the sole implementation.
-
 /// Fully fused phase router — no intermediate matrices.
 ///
 /// Uses O(n) precomputation, then a single parallel pass with:
