@@ -1,7 +1,5 @@
 # **Phase Router**
 
-(Rust Implementation)
-
 A **high-performance, deterministic routing kernel** for capacity-constrained systems, constructing **balanced bipartite routings** using cyclic phase arithmetic.
 
 > A lightweight, deterministic alternative to optimal transport under capacity constraints.
