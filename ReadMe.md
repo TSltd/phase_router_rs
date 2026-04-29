@@ -1,8 +1,25 @@
-# **Phase Router (Rust Implementation)**
+# **Phase Router**
 
-A **high-performance, deterministic load-balancing kernel** for constructing **balanced bipartite routings** using cyclic phase arithmetic.
+(Rust Implementation)
 
-This crate provides a Rust implementation of the **Orthogonal Load-Balanced Incidence Operator (OLBIO)**—a fast, reproducible method for distributing uneven workloads across fixed-capacity targets.
+A **high-performance, deterministic routing kernel** for capacity-constrained systems, constructing **balanced bipartite routings** using cyclic phase arithmetic.
+
+> A lightweight, deterministic alternative to optimal transport under capacity constraints.
+
+Hashing assumes all targets are equal.
+
+Real systems are not equal.
+
+Phase Router aligns load with capacity → fewer drops.
+
+```
+Phase Router: 92.5% survival
+Hash:         76.4% survival
+```
+
+Phase Router reduces dropped tokens by 10–19% in realistic MoE settings.
+
+This crate provides a Rust implementation of a **phase-based routing algorithm** that distributes uneven workloads across fixed-capacity targets without global coordination.
 
 ---
 
@@ -37,11 +54,15 @@ The algorithm:
 4. **Intersects two transformed matrices**
 5. **Extracts up to `k` connections per row**
 
+This effectively turns routing into intersection of intervals on a circle, rather than matching in a matrix.
+
 This produces a **low-skew, degree-weighted routing** without solving a global optimization problem.
 
 ---
 
-## ⚡ Key properties
+## Key properties
+
+### Core guarantees:
 
 - **Deterministic**
   Same input + seed → identical output
@@ -58,13 +79,15 @@ This produces a **low-skew, degree-weighted routing** without solving a global o
   E[L_j] ∝ t_j
   ```
 
+### Systems properties:
+
 - **No coordination required**
   Fully local, batch computation
 
 - **Zero intermediate matrices**
   Fused pipeline — no bit-packed matrix materialization
 
-- **Work proportional to active mass** — iterates only over nonzero row degrees
+- **Work proportional to active mass** — iterates only over nonzero row degrees (skips zeros entirely)
 
 - **Order-independent behavior** — input ordering does not create geometric hotspots
 
@@ -92,7 +115,7 @@ The implementation uses a **fully fused pipeline** that eliminates all intermedi
 - **No materialized S′ / T′ matrices** — all phase transforms are evaluated analytically at query time
 - **O(1) per candidate** — intersection reduced to arithmetic interval checks (no bitwise scans)
 - **Memory: O(n)** — only 5 small arrays, no n×n matrices
-- **Embarrassingly parallel** — each row is fully independent
+- **Highly parallel** — each row is fully independent
 - **Cache-friendly** — sequential access to small precomputed arrays
 
 ---
@@ -180,6 +203,8 @@ cargo bench
 
 (Min times shown; median times from Criterion are ~10–20% higher)
 
+The fused implementation avoids constructing ~6–130MB of intermediate matrices (for N=4096), which was the dominant bottleneck in the legacy version.
+
 ---
 
 ## 🧪 Current status
@@ -200,6 +225,7 @@ cargo bench
 - Fully fused pipeline — eliminates all n×n matrices
 - Analytical phase evaluation (no S′ / T′ materialization)
 - Reservoir sampling — O(k) memory, no candidate buffer
+- Python bindings via `pyo3` + `maturin`
 
 ### Micro-optimizations
 
@@ -207,14 +233,12 @@ cargo bench
 - Branchless cyclic range check
 - Precomputed T lookups
 - Thread-local buffer reuse
--
 
 ### Remaining opportunities
 
-- [ ] SIMD acceleration (`std::arch`) for hot loops
-- [ ] Optional `unsafe` fast paths (bounds check elimination)
-- [x] Python bindings via `pyo3` + `maturin`
-- [ ] Benchmark suite vs C++ implementation
+- SIMD acceleration (`std::arch`) for hot loops
+- Optional `unsafe` fast paths (bounds check elimination)
+- Benchmark suite vs C++ implementation
 
 ---
 
@@ -230,7 +254,7 @@ This implementation is best suited for:
 
 ---
 
-## 🧠 Mixture-of-Experts (MoE) Routing
+## Mixture-of-Experts (MoE) Routing
 
 Phase Router is particularly well-suited to **capacity-constrained expert routing** in Mixture-of-Experts models, where tokens must be dispatched to experts with heterogeneous capacity limits.
 
@@ -246,6 +270,8 @@ The cyclic phase embedding produces assignments where **expected load on each ex
 Hash:          E[load_j] = k           (uniform, ignores capacity)
 Phase Router:  E[load_j] ∝ capacity_j  (capacity-aware by construction)
 ```
+
+This emerges because both source mass and target capacity are embedded into the same cyclic phase space, and routing corresponds to interval intersection in that space.
 
 ### Benchmark results
 
@@ -306,7 +332,7 @@ Avoid when:
 
 ---
 
-## 🐍 Python Bindings
+## Python Bindings
 
 The Rust kernel is exposed to Python via [PyO3](https://pyo3.rs) + [maturin](https://www.maturin.rs). The bindings are a **thin wrapper** — zero logic duplication, GIL released during compute.
 
@@ -381,6 +407,9 @@ loads = compute_loads(routes, n=8)
 ```
 
 The demo shows that the Phase Router aligns load with capacity, while hashing ignores it.
+
+Phase Router approximates E[load_j] ∝ capacity_j under a hard fan-out constraint (k),
+which slightly compresses extreme values.
 
 ---
 
