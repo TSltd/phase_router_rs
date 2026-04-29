@@ -5,9 +5,10 @@ use rayon::prelude::*;
 
 /// Fully fused phase router — no intermediate matrices.
 ///
-/// For each row j, directly computes which columns satisfy both
-/// S'[j,col]=1 and T'[j,col]=1 using O(1) arithmetic checks,
-/// then selects up to k candidates.
+/// Uses O(n) precomputation, then a single parallel pass with:
+/// - conditional-increment cyclic iteration (no modulo)
+/// - branchless cyclic range check
+/// - reservoir sampling (O(k) memory per row, no candidates Vec)
 pub fn phase_router(
     s_bits: &[u64],
     t_bits: &[u64],
@@ -25,45 +26,64 @@ pub fn phase_router(
     let ones_t = compute_row_ones(t_bits, n, nb_words);
     let inv_perm_s = compute_inverse_perm(col_perm_s);
 
+    // Fused T lookups: t_start[col] = offsets_t[n-1-col], t_len[col] = ones_t[n-1-col]
+    // Eliminates subtraction + indirection in the hot loop
+    let mut t_start = vec![0usize; n];
+    let mut t_len = vec![0usize; n];
+    for col in 0..n {
+        let ti = n - 1 - col;
+        t_start[col] = offsets_t[ti];
+        t_len[col] = ones_t[ti];
+    }
+
     let mut routes = vec![-1i32; n * k];
 
     routes
         .par_chunks_mut(k)
         .enumerate()
-        .for_each_init(
-            || Vec::with_capacity(n),
-            |candidates, (j, row_out)| {
-                candidates.clear();
+        .for_each(|(j, row_out)| {
+            let s_start = offsets_s[j];
+            let s_len = ones_s[j];
+            let p_t = col_perm_t[j];
 
-                let s_start = offsets_s[j];
-                let s_len = ones_s[j];
-                let p_t = col_perm_t[j];
+            // Reservoir sampling: maintain k best candidates in-place
+            let mut rng = ChaCha8Rng::seed_from_u64(seed + j as u64);
+            let mut count = 0usize; // total candidates seen
 
-                // Iterate over the s_len positions where S'[j,*]=1
-                for idx in 0..s_len {
-                    let p = (s_start + idx) % n;
-                    let col = inv_perm_s[p];
-                    let ti = n - 1 - col;
+            // Cyclic iteration without modulo
+            let mut p = s_start;
 
-                    // O(1) check: is T'[j,col]=1?
-                    if in_cyclic_range(p_t, offsets_t[ti], ones_t[ti], n) {
-                        candidates.push(col);
+            for _ in 0..s_len {
+                let col = inv_perm_s[p];
+
+                // Branchless cyclic range check
+                let start = t_start[col];
+                let len = t_len[col];
+                let mut d = p_t.wrapping_sub(start);
+                if p_t < start {
+                    d = d.wrapping_add(n);
+                }
+                // d < len handles len==0 naturally (d is always >= 0, so 0 < 0 is false)
+                if d < len {
+                    // Reservoir sampling (Vitter's Algorithm R)
+                    if count < k {
+                        row_out[count] = col as i32;
+                    } else {
+                        let r = rng.gen_range(0..=count);
+                        if r < k {
+                            row_out[r] = col as i32;
+                        }
                     }
+                    count += 1;
                 }
 
-                // Partial Fisher-Yates: only shuffle k elements
-                let mut rng = ChaCha8Rng::seed_from_u64(seed + j as u64);
-                let take = k.min(candidates.len());
-                for i in 0..take {
-                    let remaining = candidates.len() - i;
-                    if remaining > 1 {
-                        let idx = i + rng.gen_range(0..remaining);
-                        candidates.swap(i, idx);
-                    }
-                    row_out[i] = candidates[i] as i32;
+                // Conditional increment (replaces % n)
+                p += 1;
+                if p == n {
+                    p = 0;
                 }
-            },
-        );
+            }
+        });
 
     routes
 }
