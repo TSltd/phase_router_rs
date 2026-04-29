@@ -30,29 +30,7 @@ In capacity-constrained systems (e.g. Mixture-of-Experts):
 - Overloaded targets drop work
 - Dropped work wastes compute and degrades quality
 
-Phase Router trades microseconds of routing for fewer dropped tokens.
-
-### The tradeoff
-
-- Hash routing: ~40× faster
-- Phase Router: ~2×–3× fewer dropped tokens
-
-In real systems:
-
-- Routing = microseconds
-- Token processing = milliseconds (GPU)
-
-So avoiding drops is often **cheaper than routing faster**.
-
-### Rule of thumb
-
-Phase Router is beneficial when:
-
-```
-cost_of_dropped_work >> cost_of_routing
-```
-
-This is true in most ML inference and training pipelines.
+Phase Router trades microseconds of routing for fewer dropped tokens - avoiding drops is often **cheaper than routing faster**.
 
 ---
 

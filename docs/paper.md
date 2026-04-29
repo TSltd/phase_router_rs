@@ -66,7 +66,7 @@ The Phase Router operates by embedding row mass into a **cyclic phase space**.
 Each row is transformed into a contiguous interval on a ring of size ( N ):
 
 [
-\text{row } i \rightarrow [\phi_i, \phi_i + s_i) \mod N
+\text{row } i \rightarrow (\phi_i, \phi_i + s_i) \mod N
 ]
 
 where:
@@ -163,27 +163,6 @@ For each row j (parallel):
 
 ---
 
-## 6. Performance
-
-Benchmarks were conducted on a laptop CPU (Intel i5-2410M).
-
-### Fused vs matrix-based implementation
-
-| N    | Fused (min) | Legacy (min) | Speedup |
-| ---- | ----------- | ------------ | ------- |
-| 64   | 0.037 ms    | 0.126 ms     | 3.4×    |
-| 512  | 0.905 ms    | 1.578 ms     | 1.7×    |
-| 1024 | 3.33 ms     | 6.28 ms      | 1.9×    |
-| 4096 | 54.1 ms     | 123.9 ms     | 2.3×    |
-
-The speedup is consistent across scales, reflecting the removal of:
-
-- matrix materialization
-- transpose
-- memory-bound operations
-
----
-
 ### Scaling behavior
 
 Runtime scales approximately as:
@@ -196,7 +175,7 @@ which behaves like ( O(N^2) ) for dense inputs, but improves with sparsity.
 
 ---
 
-## 7. Comparison with Alternatives
+## 6. Comparison with Alternatives
 
 | Method           | Speed  | Balance | Deterministic | State  |
 | ---------------- | ------ | ------- | ------------- | ------ |
@@ -211,7 +190,7 @@ The Phase Router offers a practical middle ground:
 
 ---
 
-## 8. Applications
+## 7. Applications
 
 The method is particularly well-suited for **batch-based, high-frequency routing**:
 
@@ -222,7 +201,7 @@ The method is particularly well-suited for **batch-based, high-frequency routing
 
 ---
 
-## 9. Limitations
+## 8. Limitations
 
 - Requires batch processing (not streaming)
 - Does not guarantee optimality
@@ -231,7 +210,7 @@ The method is particularly well-suited for **batch-based, high-frequency routing
 
 ---
 
-## 10. Conclusion
+## 9. Conclusion
 
 The Phase Router demonstrates that:
 
