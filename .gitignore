@@ -2,3 +2,4 @@
 Cargo.lock
 moe_results.csv
 plots/
+/.venv

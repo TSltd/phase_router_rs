@@ -104,7 +104,8 @@ src/
 ├── lib.rs        # public API + tests
 ├── bitops.rs     # bit-level utilities (fill_rotated_bits, permute, rotate)
 ├── core.rs       # pipeline stages (offsets, row_ones, cyclic range, legacy builders)
-└── router.rs     # top-level routing (fused + legacy)
+├── router.rs     # top-level routing (fused + legacy)
+└── python.rs     # PyO3 bindings (thin wrapper, no logic duplication)
 
 benches/
 └── bench.rs      # Criterion benchmarks (fused vs legacy, per-stage)
@@ -212,7 +213,7 @@ cargo bench
 
 - [ ] SIMD acceleration (`std::arch`) for hot loops
 - [ ] Optional `unsafe` fast paths (bounds check elimination)
-- [ ] Python bindings via `pyo3`
+- [x] Python bindings via `pyo3` + `maturin`
 - [ ] Benchmark suite vs C++ implementation
 
 ---
@@ -302,6 +303,56 @@ Avoid when:
 | Hashing          | ⭐⭐⭐⭐⭐ | ⭐⭐     | ✓             | ✗            |
 | Greedy           | ⭐⭐       | ⭐⭐⭐⭐ | ✓             | ✓            |
 | **Phase Router** | ⭐⭐⭐⭐   | ⭐⭐⭐⭐ | ✓             | ✗            |
+
+---
+
+## 🐍 Python Bindings
+
+The Rust kernel is exposed to Python via [PyO3](https://pyo3.rs) + [maturin](https://www.maturin.rs). The bindings are a **thin wrapper** — zero logic duplication, GIL released during compute.
+
+### Install
+
+```bash
+pip install maturin
+maturin develop --release
+```
+
+### Quick start (high-level API)
+
+```python
+import numpy as np
+import phase_router_rs
+
+# Bit-packed source/target matrices (flat u64 arrays)
+n = 1024
+nb_words = (n + 63) // 64
+s_bits = np.ones(n * nb_words, dtype=np.uint64) * 0xFFFFFFFFFFFFFFFF
+t_bits = np.ones(n * nb_words, dtype=np.uint64) * 0xFFFFFFFFFFFFFFFF
+
+# phase_router_auto generates permutations from seed internally
+routes = phase_router_rs.phase_router_auto(s_bits, t_bits, n, k=4, seed=42)
+# routes: np.ndarray shape (n, k), dtype int32
+# routes[i] → up to k target indices for source i (-1 = empty)
+```
+
+### Low-level API (bring your own permutations)
+
+```python
+col_perm_s = np.random.permutation(n).astype(np.uint64)
+col_perm_t = np.random.permutation(n).astype(np.uint64)
+
+routes = phase_router_rs.phase_router(
+    s_bits, t_bits, n, nb_words, k=4,
+    col_perm_s, col_perm_t, seed=42,
+)
+```
+
+### Performance notes
+
+- **GIL is released** during Rust compute — Rayon parallelism works fully
+- **Returns 2D array** `(n, k)` — no reshape needed
+- **Use contiguous arrays**: `np.ascontiguousarray(arr, dtype=np.uint64)` to avoid silent copies
+- Routing cost is amortized by avoiding dropped-token recomputation
 
 ---
 
