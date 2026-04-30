@@ -60,17 +60,15 @@ such that:
 The algorithm:
 
 1. **Left-aligns** row mass (preserving row degrees)
-2. **Spreads mass across a cyclic phase space**
+2. **Embeds mass into a cyclic phase space**
 3. **Applies independent permutations**
-4. **Computes the intersection of two transformed views (analytically, without materialization)**
+4. **Evaluates interval intersections in phase space**
 5. **Extracts up to `k` connections per row**
 
 Routing reduces to intersection of intervals on a circle (O(1) per candidate),
 instead of scanning or materializing matrices.
 
-This produces a **low-skew, degree-weighted routing** without solving a global optimization problem.
-
----
+## This produces a **low-skew, degree-weighted routing** without solving a global optimization problem.
 
 ## Key properties
 
