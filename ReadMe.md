@@ -462,3 +462,5 @@ This Rust implementation delivers:
 This enables fast, repeatable routing decisions in systems where traditional hashing causes load imbalance and greedy methods are too expensive.
 
 ---
+
+<img src="https://repo-view-counter.repo-view-counter-bitpackedphaserouter.workers.dev/track?repo=phase_router_rs&cb=1" width="1" height="1" style="display:none;" alt="">
