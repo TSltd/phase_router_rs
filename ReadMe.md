@@ -62,7 +62,7 @@ The algorithm:
 1. **Left-aligns** row mass (preserving row degrees)
 2. **Spreads mass across a cyclic phase space**
 3. **Applies independent permutations**
-4. **Intersects two transformed matrices**
+4. **Computes the intersection of two transformed views (analytically, without materialization)**
 5. **Extracts up to `k` connections per row**
 
 Routing reduces to intersection of intervals on a circle (O(1) per candidate),
