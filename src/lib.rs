@@ -1,6 +1,12 @@
+pub mod bitsupport;
 pub mod core;
+pub mod metrics;
 pub mod python;
 pub mod router;
+pub mod workloads;
+
+#[cfg(feature = "rank-select")]
+pub mod router_rs;
 
 #[cfg(test)]
 mod tests {

@@ -11,6 +11,12 @@ categories = ["algorithms", "science"]
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Enable the rank/select kernel (`router_rs`) and broadword primitives.
+# Off by default so the existing kernel/build path is untouched until merged.
+default = []
+rank-select = []
+
 [dependencies]
 rayon = "1.8"
 rand = "0.8"
@@ -24,6 +30,18 @@ criterion = { version = "0.5", features = ["html_reports"] }
 [[bench]]
 name = "bench"
 harness = false
+
+[[example]]
+name = "quality_probe"
+required-features = ["rank-select"]
+
+[[example]]
+name = "moe_bench_rs"
+required-features = ["rank-select"]
+
+[[example]]
+name = "spectral_probe"
+required-features = ["rank-select"]
 
 [profile.release]
 opt-level = 3

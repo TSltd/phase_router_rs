@@ -221,13 +221,14 @@ cargo run --release --example moe_bench
 
 ## 🧪 Current status
 
-- ✅ Correctness validated (basic tests)
+- ✅ Correctness validated (basic tests + property invariants under `tests/invariants.rs`)
 - ✅ Deterministic routing
 - ✅ Parallel execution via Rayon
 - ✅ Fully fused pipeline (no intermediate matrices)
 - ✅ Benchmark suite vs hash routing (CLI + Criterion)
 - ✅ Python bindings (PyO3 + maturin)
 - ✅ MoE capacity-constrained benchmarks
+- 🧪 **Experimental rank/select kernel** behind `--features rank-select` (see [Rank/select kernel](#rankselect-kernel-experimental))
 
 ---
 
@@ -425,6 +426,64 @@ The demo shows that the Phase Router aligns load with capacity, while hashing ig
 
 Phase Router approximates E[load_j] ∝ capacity_j under a hard fan-out constraint (k),
 which slightly compresses extreme values.
+
+---
+
+## Rank/select kernel (experimental)
+
+A second, opt-in routing kernel — `phase_router_rs` — replaces the source-side
+`inv_perm_s[p]` global indirection with an intrinsic
+[rank/select](https://en.wikipedia.org/wiki/Succinct_data_structure)-based
+decode in occupancy space, in the spirit of Sebastiano Vigna's broadword
+methods. The original `phase_router` is unchanged; the rank/select kernel
+lives behind a Cargo feature so the existing build path and Python wheel are
+not affected.
+
+```text
+phase_router       :  inv_perm_s[s_start + r]            (global occupancy → physical)
+phase_router_rs    :  select1(s_bits[j], (r + φ_j) % d_j) (intrinsic rank-space transport)
+phase_router_rs_   :  select1(s_bits[j], (a_j·r + b_j) % d_j),  gcd(a_j, d_j) = 1
+   _affine               (per-row affine mixers replace the global permutation entirely)
+```
+
+The target side is unchanged in both variants, so head-to-head comparison is
+direct. `select_in_word` uses BMI2 `PDEP` when available (cached runtime
+detection) and falls back to a portable `tzcnt` loop.
+
+### Build & run
+
+```bash
+# Default build is unchanged. To enable the experimental kernel:
+cargo build --release --features rank-select
+cargo test  --features rank-select
+
+# Head-to-head quality comparison (hash | phase_router | rs additive | rs affine):
+cargo run --release --features rank-select --example quality_probe
+
+# MoE survival sweeps across all four methods (writes moe_results_rs.csv):
+cargo run --release --features rank-select --example moe_bench_rs
+```
+
+### Why this matters
+
+- **Topology-preserving transport** — rank-space iteration preserves the
+  original support's spacing/locality; left-alignment + global permutation
+  destroys it.
+- **Eliminates a random-access lookup** — no `inv_perm_s` array on the hot
+  path. Each row's `select1` decode is word-local + ~3 cycles via PDEP.
+- **No global permutation needed** — the affine variant derives a per-row
+  bijection on `[0, d_j)` from the seed, replacing the source-side
+  permutation array entirely.
+
+The hypothesis behind including the affine variant is that
+**per-row affine mixers can fully replace the global source permutation**;
+if confirmed by the survival/CV numbers from `moe_bench_rs`, that's a
+substantive structural simplification of the original OLBIO pipeline.
+
+See [`dev/rank_select_progress.md`](dev/rank_select_progress.md) for design
+notes, hypotheses to validate, and follow-up work (word-prefix popcount
+index, full Vigna broadword select, intrinsic-both-sides Option B, Python
+bindings).
 
 ---
 
