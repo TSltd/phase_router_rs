@@ -3,6 +3,7 @@ Cargo.lock
 moe_results.csv
 plots/
 /.venv
+/.venv-modal
 /dev
 
 # Python / maturin build artifacts
