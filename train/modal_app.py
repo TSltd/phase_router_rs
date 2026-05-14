@@ -49,7 +49,21 @@ image = (
         "curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs "
         " | sh -s -- -y --default-toolchain stable --profile minimal",
     )
-    .env({"PATH": "/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin"})
+    .env({
+        "PATH": "/root/.cargo/bin:/usr/local/bin:/usr/bin:/bin",
+        # Without this, Python's stdout is line-buffered only when
+        # attached to a TTY. Modal log streams are NOT a TTY, so
+        # `print(...)` calls from `_loop.py` get held in a 4 KB buffer
+        # and never reach the log viewer until the buffer fills or the
+        # process exits. The `transformers` library issues
+        # `warnings.warn(...)` which goes to stderr (unbuffered) and
+        # appears immediately, giving the false impression that the
+        # script has hung right after tokeniser init.
+        #
+        # PYTHONUNBUFFERED=1 forces stdout/stderr to be unbuffered
+        # everywhere — `print(...)` lines now appear in real time.
+        "PYTHONUNBUFFERED": "1",
+    })
     .pip_install(
         "maturin>=1.5,<2.0",
         "torch==2.4.0",
@@ -289,8 +303,56 @@ def orchestrate_sweep(config: str = "tiny", max_steps: int | None = None,
     return sweep_root
 
 
+@app.function(
+    timeout=24 * 3600,
+    volumes=VOLUME_MOUNTS,
+)
+def orchestrate_stress_sweep(config: str = "stress",
+                             max_steps: int | None = None,
+                             sweep_name: str = "stress_sweep"):
+    """32-expert stress sweep — 4 cf × 2 routers = 8 runs, no aux ablation.
+
+    The aux-loss ablation was already characterised in cf_sweep_v2
+    (see `dev/findings_cf_sweep_v2.md`): without aux loss, top-k's CV
+    explodes from ~0.10 to ~1.0 at 8 experts. We don't need to re-prove
+    that at 32 experts; what we DO need is the head-to-head behaviour
+    when balance actually matters.
+
+    Layout on volume:
+        /root/runs/<sweep_name>/topk_cf1.00/
+        /root/runs/<sweep_name>/topk_cf1.25/
+        ...
+        /root/runs/<sweep_name>/phase_cf2.00/
+
+    Budget (rough): with `stress.yaml` defaults (8000 steps, batch 16,
+    seq 512, d_model 512, 8 layers, 32 experts), each run is ~50–80 min
+    on A10G ⇒ ~8 × ~60 min = ~8 GPU-hours = **~$8–10**.
+    """
+    sweep_root = f"/root/runs/{sweep_name}"
+    print(f"[stress] root={sweep_root} config={config} max_steps={max_steps}")
+
+    capacity_factors = [1.0, 1.25, 1.5, 2.0]
+    for cf in capacity_factors:
+        for router in ("topk", "phase"):
+            tag = f"{router}_cf{cf:.2f}"
+            print(f"[stress] === {tag} ===")
+            train_one.remote(
+                router,
+                config=config,
+                max_steps=max_steps,
+                out_subdir=f"{sweep_name}/{tag}",
+                capacity_factor=cf,
+            )
+
+    print("[stress] === aggregate ===")
+    compare_sweep.remote(sweep_root)
+    print(f"[stress] done — artefacts in {sweep_root}")
+    return sweep_root
+
+
 
 # ── Local entrypoints ───────────────────────────────────────────────────
+
 
 
 @app.local_entrypoint()
@@ -382,4 +444,39 @@ def sweep(config: str = "tiny", max_steps: int | None = None,
     print(f"sweep orchestrator spawned: call_id={call.object_id}")
     print(f"  watch logs:  modal app logs phase-router-moe")
     print(f"  fetch when done:  modal volume get pr-runs /{sweep_name} ./runs/{sweep_name} --force")
+
+
+@app.local_entrypoint()
+def stress_sweep(config: str = "stress", max_steps: int | None = None,
+                 sweep_name: str = "stress_sweep"):
+    """32-expert stress sweep (4 cf × 2 routers, no noaux ablation).
+
+    ⚠  **`--detach` is REQUIRED.** Same caveat as `both` / `sweep`: this
+        entrypoint uses `.spawn(...)` and Modal will tear the app down
+        the moment the local CLI exits unless `--detach` is set. If you
+        launch without `--detach` you'll see "Live Apps: 0" on
+        https://modal.com/apps within seconds and no GPU work will run.
+
+    Correct invocation:
+
+        modal run --detach train/modal_app.py::stress_sweep
+
+    Companion to `cf_sweep_v2` — answers "does the v2 conclusion
+    (top-k +5 % CE, phase wins everything else) hold at 32 experts?".
+    See `dev/stress_sweep_plan.md` for the experimental rationale.
+
+    Default budget: ~8 GPU-hours on A10G ≈ **$8–10** (8 runs × ~60 min
+    each on `stress.yaml` with its 8000-step default).
+
+    After it finishes:
+
+        SKIP_MODEL=1 SWEEP=stress_sweep bash scripts/pull_sweep.sh
+        python train/compare_sweep.py runs/stress_sweep -o reports/stress_sweep.md
+    """
+    call = orchestrate_stress_sweep.spawn(config, max_steps, sweep_name)
+    print(f"stress sweep orchestrator spawned: call_id={call.object_id}")
+    print(f"  watch logs:  modal app logs phase-router-moe")
+    print(f"  fetch when done (metrics only, fast):")
+    print(f"    SKIP_MODEL=1 SWEEP={sweep_name} bash scripts/pull_sweep.sh")
+
 

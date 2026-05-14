@@ -1,0 +1,65 @@
+# Stress config — 32-expert balance regime.
+#
+# Purpose: test whether the cf_sweep_v2 result (top-k wins CE by ~5%,
+# phase wins everywhere else) still holds when balance actually matters.
+# `cf_sweep_v2` used `tiny.yaml` (n_experts: 8); this file is a verbatim
+# copy with the SOLE change being `n_experts: 8 -> 32`. Holding all other
+# knobs (d_model, n_layers, batch, seq, max_steps, lr, …) fixed is what
+# makes the diff against `cf_sweep_v2` interpretable.
+#
+# Hypothesis (see dev/stress_sweep_plan.md for the full grid):
+#
+#   - top-k CV climbs above v2's 0.10–0.15 range (aux loss has 4×
+#     more dimensions to balance with the same alpha=0.01);
+#   - phase CV stays ~0.04 (structural — independent of n_experts);
+#   - drop fraction at cf=1.0 rises for top-k;
+#   - CE gap either closes (balance starts to matter so phase becomes
+#     competitive on quality), widens (top-k's aux loss copes fine and
+#     phase pays a bigger structural price), or stays at ~5 %.
+#
+# All three outcomes are publishable.
+#
+# Earlier draft of this file used `small.yaml` scale (571 M params,
+# 8000 steps) which projected to ~$200 of GPU time — way over budget
+# and dominated by Python-side per-expert MLP launches. We don't need
+# that much wall-time to answer the n_experts=32 question; sticking to
+# tiny scale and just dialling the expert count gives a clean 4× diff
+# at ~$3–5 of GPU.
+
+# Model — IDENTICAL to tiny.yaml except n_experts.
+d_model: 256
+n_layers: 4
+n_heads: 4
+d_ff: 1024
+n_experts: 32 # ← the only model knob that differs from tiny.yaml
+k: 2
+vocab_size: 50257
+
+# Sequence / batch — IDENTICAL to tiny.yaml.
+seq_len: 256
+batch_size: 8
+grad_accum: 2
+
+# Optimisation — IDENTICAL to tiny.yaml.
+lr: 3.0e-4
+weight_decay: 0.01
+betas: [0.9, 0.95]
+warmup: 100
+max_steps: 2000
+
+# MoE-specific
+capacity_factor: 1.25
+aux_loss_alpha: 0.01
+phase_capacity_mode: uniform
+
+# Logging
+log_every: 25
+val_every: 250
+val_steps: 50
+seed: 1337
+
+# Data
+dataset: roneneldan/TinyStories
+dataset_split_train: train
+dataset_split_val: validation
+text_field: text
