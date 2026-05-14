@@ -2,16 +2,28 @@
 
 Usage from your laptop:
 
-    modal setup                                   # one-time
-    modal volume create pr-runs                   # one-time
-    modal run train/modal_app.py::smoke           # quick 50-step sanity check
-    modal run train/modal_app.py::full --router topk  --config tiny
-    modal run train/modal_app.py::full --router phase --config tiny
-    modal volume get pr-runs / ./runs --force     # pull artefacts back
+    modal setup                                                 # one-time
+    modal volume create pr-runs                                 # one-time
+    modal run          train/modal_app.py::smoke                # quick 50-step sanity check (foreground)
+    modal run --detach train/modal_app.py::full  --router topk  --config tiny
+    modal run --detach train/modal_app.py::full  --router phase --config tiny
+    modal run --detach train/modal_app.py::both  --config tiny  # both routers + compare
+    modal run --detach train/modal_app.py::sweep --config tiny  # cf sweep + aux ablation
+    modal volume get   pr-runs / ./runs --force                 # pull artefacts back
+
+⚠  **`--detach` is REQUIRED for every entrypoint that uses `.spawn(...)`
+    internally** (`both`, `sweep`). Without it, the local CLI exits the
+    moment the entrypoint returns and Modal tears down the app along
+    with the spawned orchestrator — `https://modal.com/apps` will show
+    "Live Apps: 0" within seconds and no work will actually run.
+    `smoke` and `full` use `.remote(...)` (blocking) and run fine
+    without `--detach`, though `--detach` is still recommended for
+    `full` because each run is ~2 hr on A10G.
 
 Everything else (image build, GPU provisioning, log streaming) is
 handled by Modal.
 """
+
 from __future__ import annotations
 
 import os
@@ -311,14 +323,24 @@ def full(router: str = "topk", config: str = "tiny"):
 def both(config: str = "tiny", max_steps: int | None = None):
     """Run both routers sequentially, then compare.
 
-    Recommended invocation (survives local disconnect):
+    ⚠  **`--detach` is REQUIRED.** This entrypoint uses `.spawn(...)`,
+        which only survives if Modal is told to keep the app alive
+        after the local CLI exits. Without `--detach`:
+          • the orchestrator is killed within seconds of launch,
+          • `https://modal.com/apps` shows "Live Apps: 0",
+          • no GPU work runs and no artefacts are written.
+
+    Correct invocation:
 
         modal run --detach train/modal_app.py::both --config tiny
 
     This fires `orchestrate.spawn(config)` and returns. The orchestrator
     lives entirely on Modal and its three blocking `.remote()` calls
     (topk → phase → compare) will complete regardless of your CLI state.
+    Use `both_blocking` instead if you want to stream logs live without
+    `--detach`.
     """
+
     call = orchestrate.spawn(config, max_steps)
     print(f"orchestrator spawned: call_id={call.object_id}")
     print(f"  watch logs:  modal app logs phase-router-moe")
@@ -341,13 +363,21 @@ def sweep(config: str = "tiny", max_steps: int | None = None,
           sweep_name: str = "cf_sweep"):
     """Capacity-factor sweep (4 cf × 2 routers) + 2 aux-loss ablations.
 
-    Recommended invocation:
+    ⚠  **`--detach` is REQUIRED.** Same caveat as `both`: this entrypoint
+        uses `.spawn(...)` and Modal will tear the app (and the spawned
+        orchestrator) down the moment the local CLI exits unless
+        `--detach` is set. If you launch without `--detach` you'll see
+        "Live Apps: 0" on https://modal.com/apps within seconds and no
+        GPU work will run.
+
+    Correct invocation:
 
         modal run --detach train/modal_app.py::sweep --config tiny
 
     Total wall-time on A10G with default `tiny.yaml` (2000 steps): ~80 min,
     cost: ~$1.50. Writes a single aggregated `sweep.md` at the end.
     """
+
     call = orchestrate_sweep.spawn(config, max_steps, sweep_name)
     print(f"sweep orchestrator spawned: call_id={call.object_id}")
     print(f"  watch logs:  modal app logs phase-router-moe")
