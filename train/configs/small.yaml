@@ -1,0 +1,40 @@
+# Small config — a "real" comparison run.
+# Targets A10G (24 GB) at fp16/bf16. Adjust batch / seq_len if you OOM.
+
+# Model
+d_model: 512
+n_layers: 8
+n_heads: 8
+d_ff: 2048
+n_experts: 8
+k: 2
+vocab_size: 50257
+
+# Sequence / batch
+seq_len: 512
+batch_size: 16
+grad_accum: 4
+
+# Optimisation
+lr: 3.0e-4
+weight_decay: 0.01
+betas: [0.9, 0.95]
+warmup: 500
+max_steps: 20000
+
+# MoE-specific
+capacity_factor: 1.25
+aux_loss_alpha: 0.01
+phase_capacity_mode: uniform # "uniform" | "ema"
+
+# Logging
+log_every: 50
+val_every: 1000
+val_steps: 100
+seed: 1337
+
+# Data
+dataset: roneneldan/TinyStories
+dataset_split_train: train
+dataset_split_val: validation
+text_field: text

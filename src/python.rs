@@ -2,7 +2,8 @@ use numpy::ndarray::Array2;
 use numpy::{PyArray2, PyReadonlyArray1};
 use pyo3::prelude::*;
 
-use crate::router::phase_router;
+use crate::router::{phase_router, phase_router_uniform_dispatch};
+
 
 /// Low-level binding: thin wrapper over the Rust kernel.
 ///
@@ -84,10 +85,53 @@ fn phase_router_auto_py<'py>(
     Ok(PyArray2::from_owned_array(py, arr))
 }
 
+/// Fused MoE dispatch binding: builds (uniform) s_bits/t_bits, runs the
+/// phase-routing kernel, maps kernel columns to expert ids via band tiling,
+/// and dedupes the first `k` unique experts per token — all in a single
+/// GIL-released Rust call.
+///
+/// Returns an `(n_tokens, k)` int32 NumPy array of expert ids in
+/// `[0, n_experts)`, with `-1` for unfilled slots.
+#[pyfunction]
+#[pyo3(
+    name = "phase_router_uniform_dispatch",
+    signature = (n_tokens, n_experts, k, base_density, seed, oversample = 4),
+)]
+fn phase_router_uniform_dispatch_py<'py>(
+    py: Python<'py>,
+    n_tokens: usize,
+    n_experts: usize,
+    k: usize,
+    base_density: f64,
+    seed: u64,
+    oversample: usize,
+) -> PyResult<&'py PyArray2<i32>> {
+    if n_tokens == 0 || n_experts == 0 || k == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "n_tokens, n_experts, k must all be > 0",
+        ));
+    }
+    if oversample == 0 {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "oversample must be > 0",
+        ));
+    }
+
+    let routes = py.allow_threads(|| {
+        phase_router_uniform_dispatch(n_tokens, n_experts, k, base_density, oversample, seed)
+    });
+
+    let arr = Array2::from_shape_vec((n_tokens, k), routes)
+        .map_err(|e| pyo3::exceptions::PyValueError::new_err(e.to_string()))?;
+    Ok(PyArray2::from_owned_array(py, arr))
+}
+
 /// Python module definition.
 #[pymodule]
 fn phase_router_rs(_py: Python, m: &PyModule) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(phase_router_py, m)?)?;
     m.add_function(wrap_pyfunction!(phase_router_auto_py, m)?)?;
+    m.add_function(wrap_pyfunction!(phase_router_uniform_dispatch_py, m)?)?;
     Ok(())
 }
+

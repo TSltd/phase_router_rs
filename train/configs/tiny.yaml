@@ -1,0 +1,40 @@
+# Tiny config — smoke / first-pass comparison run.
+# Sized to fit on a single A10G or even CPU (slow) for sanity checks.
+
+# Model
+d_model: 256
+n_layers: 4
+n_heads: 4
+d_ff: 1024
+n_experts: 8
+k: 2
+vocab_size: 50257 # GPT-2 tokenizer
+
+# Sequence / batch
+seq_len: 256
+batch_size: 8
+grad_accum: 2
+
+# Optimisation
+lr: 3.0e-4
+weight_decay: 0.01
+betas: [0.9, 0.95]
+warmup: 100
+max_steps: 2000
+
+# MoE-specific
+capacity_factor: 1.25
+aux_loss_alpha: 0.01 # only applied for top-k router
+phase_capacity_mode: uniform # "uniform" (Switch-style hard cap) | "ema" (gate-driven)
+
+# Logging
+log_every: 25
+val_every: 250
+val_steps: 50
+seed: 1337
+
+# Data
+dataset: roneneldan/TinyStories
+dataset_split_train: train
+dataset_split_val: validation
+text_field: text

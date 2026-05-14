@@ -1,0 +1,40 @@
+# Tiny-CPU config — only for local smoke tests (CPU).
+# ~30s per step on a laptop. NEVER use this for real comparisons.
+
+# Model
+d_model: 128
+n_layers: 2
+n_heads: 4
+d_ff: 256
+n_experts: 4
+k: 2
+vocab_size: 50257
+
+# Sequence / batch
+seq_len: 64
+batch_size: 4
+grad_accum: 1
+
+# Optimisation
+lr: 3.0e-4
+weight_decay: 0.01
+betas: [0.9, 0.95]
+warmup: 5
+max_steps: 5
+
+# MoE-specific
+capacity_factor: 1.25
+aux_loss_alpha: 0.01
+phase_capacity_mode: uniform
+
+# Logging
+log_every: 1
+val_every: 100
+val_steps: 2
+seed: 1337
+
+# Data
+dataset: roneneldan/TinyStories
+dataset_split_train: train
+dataset_split_val: validation
+text_field: text

@@ -6,6 +6,10 @@ plots/
 /.venv-modal
 /dev
 
+# Modal training artefacts
+/runs
+/reports
+
 # Python / maturin build artifacts
 __pycache__/
 *.pyc
