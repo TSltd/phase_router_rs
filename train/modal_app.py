@@ -135,15 +135,21 @@ def train_one(router: str, config: str = "tiny", max_steps: int | None = None,
               capacity_factor: float | None = None,
               aux_loss_alpha: float | None = None,
               seq_len: int | None = None):
-    """Run one training job (top-k or phase) and return its run dir."""
+    """Run one training job (topk | phase | balanced) and return its run dir."""
     os.chdir(REMOTE_REPO)
 
     out_subdir = out_subdir or f"{config}/{router}"
     out_dir = f"/root/runs/{out_subdir}"
     os.makedirs(out_dir, exist_ok=True)
 
+    # Map router name → entry-point script.
+    entry = {
+        "topk":     "train/train_baseline.py",
+        "phase":    "train/train_phase.py",
+        "balanced": "train/train_balanced.py",
+    }[router]
     cmd = [
-        "python", f"train/train_{ 'baseline' if router == 'topk' else 'phase' }.py",
+        "python", entry,
         "--config", f"train/configs/{config}.yaml",
         "--out_dir", out_dir,
     ]
@@ -350,6 +356,53 @@ def orchestrate_stress_sweep(config: str = "stress",
     return sweep_root
 
 
+@app.function(
+    timeout=12 * 3600,
+    volumes=VOLUME_MOUNTS,
+)
+def orchestrate_ensemble_sweep(config: str = "stress",
+                               max_steps: int | None = None,
+                               sweep_name: str = "ensemble_stress_sweep"):
+    """Constrained-optimisation ensemble sweep — 4 cf × balanced = 4 runs.
+
+    Tests whether the `BalancedRouter` (top-k scores → phase-style
+    quotas → soft fall-through admission) inherits top-k's CE and
+    phase's CV at every capacity factor. See `dev/ensemble_probe_plan.md`
+    for the algorithm, the pre-registered hypotheses, and the success
+    criteria.
+
+    Layout on volume:
+        /root/runs/<sweep_name>/balanced_cf1.00/
+        /root/runs/<sweep_name>/balanced_cf1.25/
+        /root/runs/<sweep_name>/balanced_cf1.50/
+        /root/runs/<sweep_name>/balanced_cf2.00/
+
+    Budget: 4 × ~30 min on A10G ≈ **~$1.50** with `stress.yaml`
+    (32 experts), or ~4 × ~5 min ≈ **~$0.30** with `tiny.yaml`
+    (8 experts). The aggregator already knows how to plot `balanced`
+    alongside top-k / phase if you point it at a merged directory.
+    """
+    sweep_root = f"/root/runs/{sweep_name}"
+    print(f"[ensemble] root={sweep_root} config={config} max_steps={max_steps}")
+
+    capacity_factors = [1.0, 1.25, 1.5, 2.0]
+    for cf in capacity_factors:
+        tag = f"balanced_cf{cf:.2f}"
+        print(f"[ensemble] === {tag} ===")
+        train_one.remote(
+            "balanced",
+            config=config,
+            max_steps=max_steps,
+            out_subdir=f"{sweep_name}/{tag}",
+            capacity_factor=cf,
+        )
+
+    print("[ensemble] === aggregate ===")
+    compare_sweep.remote(sweep_root)
+    print(f"[ensemble] done — artefacts in {sweep_root}")
+    return sweep_root
+
+
 
 # ── Local entrypoints ───────────────────────────────────────────────────
 
@@ -376,9 +429,30 @@ def smoke(config: str = "tiny", max_steps: int = 50):
 
 @app.local_entrypoint()
 def full(router: str = "topk", config: str = "tiny"):
-    """One full training run. Call twice (router=topk then router=phase)."""
-    assert router in ("topk", "phase"), router
+    """One full training run. Call separately per router."""
+    assert router in ("topk", "phase", "balanced"), router
     train_one.remote(router, config=config)
+
+
+@app.local_entrypoint()
+def smoke_balanced(config: str = "stress", max_steps: int = 200):
+    """Foreground smoke for the BalancedRouter (constrained-optimisation
+    ensemble). Cheap (~$0.10) sanity check before launching the full
+    ensemble sweep. Verifies image + router code + metrics layout.
+
+    See `dev/ensemble_probe_plan.md` § Launch checklist.
+    """
+    print("=== smoke_balanced: balanced ===")
+    train_one.remote(
+        "balanced",
+        config=config,
+        max_steps=max_steps,
+        out_subdir=f"smoke_balanced_{config}/balanced_cf1.00",
+        capacity_factor=1.0,
+    )
+    print(f"done. fetch with:")
+    print(f"    modal volume get pr-runs /smoke_balanced_{config} "
+          f"./runs/smoke_balanced_{config} --force")
 
 
 @app.local_entrypoint()
@@ -475,6 +549,37 @@ def stress_sweep(config: str = "stress", max_steps: int | None = None,
     """
     call = orchestrate_stress_sweep.spawn(config, max_steps, sweep_name)
     print(f"stress sweep orchestrator spawned: call_id={call.object_id}")
+    print(f"  watch logs:  modal app logs phase-router-moe")
+    print(f"  fetch when done (metrics only, fast):")
+    print(f"    SKIP_MODEL=1 SWEEP={sweep_name} bash scripts/pull_sweep.sh")
+
+
+@app.local_entrypoint()
+def ensemble_sweep(config: str = "stress", max_steps: int | None = None,
+                   sweep_name: str = "ensemble_stress_sweep"):
+    """4-cf sweep of the BalancedRouter (constrained-optimisation ensemble).
+
+    ⚠  **`--detach` is REQUIRED.** Uses `.spawn(...)` — see the
+        `both` / `sweep` / `stress_sweep` entrypoints for the rationale.
+
+    Correct invocation:
+
+        modal run --detach train/modal_app.py::ensemble_sweep --config stress
+        modal run --detach train/modal_app.py::ensemble_sweep --config tiny --sweep-name ensemble_tiny_sweep
+
+    See `dev/ensemble_probe_plan.md` for the algorithm, hypothesis grid,
+    success criteria, and what to do with each outcome.
+
+    Budget: ~$1.50 for `stress.yaml` (32 experts), ~$0.30 for
+    `tiny.yaml` (8 experts).
+
+    After it finishes:
+
+        SKIP_MODEL=1 SWEEP=<sweep_name> bash scripts/pull_sweep.sh
+        python3 train/compare_sweep.py runs/<sweep_name> -o reports/<sweep_name>.md
+    """
+    call = orchestrate_ensemble_sweep.spawn(config, max_steps, sweep_name)
+    print(f"ensemble sweep orchestrator spawned: call_id={call.object_id}")
     print(f"  watch logs:  modal app logs phase-router-moe")
     print(f"  fetch when done (metrics only, fast):")
     print(f"    SKIP_MODEL=1 SWEEP={sweep_name} bash scripts/pull_sweep.sh")

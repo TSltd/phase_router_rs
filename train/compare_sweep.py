@@ -34,7 +34,7 @@ import matplotlib.pyplot as plt
 
 
 SUBDIR_RE = re.compile(
-    r"^(?P<router>topk|phase)_cf(?P<cf>\d+\.\d+)(?P<ablation>_noaux)?$"
+    r"^(?P<router>topk|phase|balanced)_cf(?P<cf>\d+\.\d+)(?P<ablation>_noaux)?$"
 )
 
 
@@ -112,6 +112,7 @@ SERIES_STYLE = {
     "topk":        ("top-k (aux=0.01)", "tab:blue",   "-",  "o"),
     "topk_noaux":  ("top-k (aux=0)",    "tab:cyan",   "--", "x"),
     "phase":       ("phase",            "tab:orange", "-",  "s"),
+    "balanced":    ("balanced",         "tab:green",  "-",  "D"),
 }
 
 

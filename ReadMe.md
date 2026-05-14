@@ -1,132 +1,173 @@
 # **Phase Router**
 
-A **deterministic, capacity-aware routing kernel** that reduces dropped work in load-balanced systems.
+A **deterministic, capacity-factor-invariant balance primitive** for
+sparse routing (Mixture-of-Experts, shard dispatch, request routing).
 
-> Trades microseconds of routing for milliseconds of saved compute.
+> **Phase routing converts balance from an optimisation objective
+> into a geometric invariant.**
 
-Hashing assumes all targets are equal.
+Switch-style top-k routers treat load balance as a soft penalty on a
+global gate statistic, kept honest by an auxiliary loss and a tuned
+**capacity factor `cf`**. Remove either and the gate collapses: load
+CV explodes 10×, drop rate jumps to ~45 %.
 
-Real systems are not equal.
-
-Phase Router aligns load with capacity → fewer drops.
-
-```
-Phase Router: 92.5% survival
-Hash:         76.4% survival
-```
-
-Phase Router reduces dropped tokens by 10–19% in realistic MoE settings.
-
-This crate provides a Rust implementation of a **phase-based routing algorithm** that distributes uneven workloads across fixed-capacity targets without global coordination.
+Phase routing makes balance a **structural property of the
+cyclic-phase intersection** — no aux loss, no capacity factor, no
+gate over experts to collapse. The trade-off is a 5 – 12 %
+cross-entropy cost: phase routing is **not** a better semantic
+router than top-k; it is a structural **balancing substrate**.
 
 ---
 
-## Why this matters
+## What this actually is
 
-Hash routing is fast, but blind to capacity.
+For an MoE layer routing `N` tokens to `E` capacity-bounded experts,
+phase routing returns indices `idx ∈ {-1, 0, …, E-1}^{N×k}` such that:
 
-In capacity-constrained systems (e.g. Mixture-of-Experts):
+- **Capacity respected:** `Σ_i 𝟙[idx[i,:] = j] ≤ C_j` for every
+  expert `j`.
+- **Fan-out respected:** each row holds up to `k` distinct experts.
+- **Load proportional to capacity by construction:**
+  `E[L_j] ∝ t_j`, with `O(N^-1/2)` discreteness fluctuations.
+- **Deterministic and reproducible** from a single seed.
 
-- Overloaded targets drop work
-- Dropped work wastes compute and degrades quality
-
-Phase Router trades microseconds of routing for fewer dropped tokens - avoiding drops is often **cheaper than routing faster**.
-
----
-
-## What this does
-
-Given two inputs:
-
-- **Sources** with varying weights (rows)
-- **Targets** with varying capacities (columns)
-
-The Phase Router computes a sparse assignment:
-
-```
-O ∈ {0,1}^{N×N}
-```
-
-such that:
-
-- Each row has **at most `k` outputs** (bounded fan-out)
-- Column loads are **balanced in expectation**
-- Routing is **deterministic given a seed**
+The selection rule is a function of `(N, E, k, base_density, seed)`
+only — it does **not** consume gate logits. That is why it requires no capacity-factor or auxiliary-loss tuning (no `α`, no `cf`) and nothing
+to collapse (no learned gate over experts).
 
 ---
 
-## Intuition
+## Headline results
 
-The algorithm:
+### 1. Capacity-factor invariance (the strongest claim)
 
-1. **Left-aligns** row mass (preserving row degrees)
-2. **Embeds mass into a cyclic phase space**
-3. **Applies independent permutations**
-4. **Evaluates interval intersections in phase space**
-5. **Extracts up to `k` connections per row**
+On a 32-expert TinyStories MoE, sweeping `cf ∈ {1.00, 1.25, 1.50, 2.00}`:
 
-Routing reduces to intersection of intervals on a circle (O(1) per candidate),
-instead of scanning or materializing matrices.
+| router    | val_ce          | val_cv          | val_drop         | val_contig     | route_ms    |
+| --------- | --------------- | --------------- | ---------------- | -------------- | ----------- |
+| top-k     | 4.712–4.766     | 0.144 → 0.221   | 11.79 % → 0.00 % | 0.110 → 0.141  | 10.7 – 11.9 |
+| **phase** | **5.286–5.287** | **0.0997 flat** | **0.58 % flat**  | **0.120 flat** | 7.3 – 10.0  |
 
-## This produces a **low-skew, degree-weighted routing** without solving a global optimization problem.
+Phase's (CE, CV, drop, contig) tuple varies by **< 0.05 %** across
+the entire cf range. Top-k swings 5 – 50 %. The capacity-factor
+knob is empirically inert for phase.
 
-## Key properties
+### 2. Anti-collapse without the aux loss
 
-### Core guarantees:
+At 8 experts, dropping the auxiliary load-balance loss (`α = 0`):
 
-- **Deterministic**
-  Same input + seed → identical output
+| router         | val_cv    | val_drop    |
+| -------------- | --------- | ----------- |
+| top-k aux=0.01 | 0.106     | 8.5 %       |
+| top-k aux=0    | **0.879** | **47.0 %**  |
+| **phase**      | **0.036** | **0.000 %** |
 
-- **Bounded fan-out**
+Phase has no aux-loss hyperparameter to drop — the load distribution
+is structural and cannot collapse without modifying the kernel itself.
 
-  ```
-  ∑_j O[i,j] ≤ k
-  ```
+### 3. Higher token survival under heterogeneous capacity (baseline)
 
-- **Load-balanced (statistically)**
+Against capacity-aware uniform **hash** routing on `N = 1024` shards
+with skewed capacities (10 % at 8×, 20 % at 2×, rest at 1×):
 
-  ```
-  E[L_j] ∝ t_j
-  ```
+| scenario                  | phase | hash  | advantage    |
+| ------------------------- | ----- | ----- | ------------ |
+| tight (1.0× headroom)     | 87.9% | 79.2% | **+8.7 pp**  |
+| practical (1.2× headroom) | 89.8% | 79.2% | **+10.5 pp** |
+| high fan-out (k = 16)     | 96.6% | 77.6% | **+19.0 pp** |
+| large scale (N = 4096)    | 91.1% | 79.0% | **+12.1 pp** |
 
-### Systems properties:
-
-- **No coordination required**
-  Fully local, batch computation
-
-- **Zero intermediate matrices**
-  Fused pipeline — no bit-packed matrix materialization
-
-- **Work proportional to active mass** — iterates only over nonzero row degrees (skips zeros entirely)
-
-- **Order-independent behavior** — input ordering does not create geometric hotspots
+Full benchmark methodology in [`docs/comparison.md`](docs/comparison.md).
 
 ---
 
-## Pipeline
+## The honest trade-off
 
-The implementation uses a **fully fused pipeline** that eliminates all intermediate matrices:
+Phase routing is **strictly worse than top-k on validation
+cross-entropy** at every scale we tested:
 
-```
-1. Precompute O(n) arrays:
-   - row offsets (cumulative popcount prefix sums)
-   - row ones counts (popcount per row)
-   - inverse source permutation
+| scale      | top-k best CE | phase CE | gap     |
+| ---------- | ------------- | -------- | ------- |
+| 8 experts  | 4.845         | 5.181    | +6.9 %  |
+| 32 experts | 4.712         | 5.286    | +12.2 % |
 
-2. For each row j (parallel):
-   - Iterate only positions where S'[j,*] = 1 (cyclic interval)
-   - Map positions through inverse permutation
-   - Evaluate T'[j,col] via arithmetic interval test (no matrix lookup)
-   - Reservoir sample up to k matches (O(k) memory)
-```
+The gap **widens with `E`** because phase selection ignores gate
+affinity — a token whose top-affinity expert is at index 17 might be
+routed to expert 9 instead.
 
-### Design principles
+This isn't a bug, it's the design. **Balance and specialisation are
+antagonistic objectives under sparse routing:** top-k allows semantic
+concentration in the gate (specialisation) but destabilises occupancy;
+phase suppresses concentration (stable occupancy) but weakens
+specialisation. Phase picks balance and pays the affinity tax.
 
-- **No materialized S′ / T′ matrices** — all phase transforms are evaluated analytically at query time
-- **O(1) per candidate** — intersection reduced to arithmetic interval checks (no bitwise scans)
-- **Memory: O(n)** — only 5 small arrays, no n×n matrices
-- **Highly parallel** — each row is fully independent
-- **Cache-friendly** — sequential access to small precomputed arrays
+We tried the obvious hybrid (top-k for affinity, phase-style quotas,
+soft fall-through). It **fails catastrophically** — 62 % drop at
+32 experts, because the learned gate collapses onto `k + overflow`
+effective experts and the fall-through has nowhere to land. Phase's
+invariances are **structural**, not portable into hybrids that retain
+a learned gate over experts. See §6 of [`docs/paper.md`](docs/paper.md).
+
+## Conceptual distinction
+
+> Top-k:
+> balance enforced by optimization pressure
+>
+> Phase:
+> balance enforced by geometric construction
+
+---
+
+## When to use
+
+Phase routing is the right choice when **balance and reproducibility
+matter more than per-token affinity**:
+
+- **Heterogeneous-capacity shard dispatch** — mixed-GPU MoE inference;
+  capacity-proportional load by construction.
+- **Inference at tight `cf`** — provision exactly at the quantum
+  `N · k / E` without worrying about cf interactions.
+- **Reproducibility-critical pipelines** — bit-deterministic given a
+  seed; no aux-loss coefficient distorting the optimisation
+  objective.
+- **Anti-collapse-critical pipelines** — long-running deployments
+  where gate collapse would be an SLO failure. Phase cannot collapse.
+
+Phase routing is the **wrong** choice when:
+
+- per-token expert specialisation dominates the value (5 – 12 % CE
+  cost is unacceptable);
+- you can tolerate aux-loss tuning and capacity-factor tuning anyway;
+- the batch shape is so small that the 2 – 3 ms / forward routing
+  saving is irrelevant.
+
+---
+
+## Algorithm intuition
+
+Phase routing is the cyclic-phase intersection of two bit-packed
+matrices encoding per-source mass and per-target capacity:
+
+1. **Cyclic embedding.** Row `i` is a contiguous interval
+   `(φ_i, φ_i + s_i) mod N` on a ring of size `N`, with
+   `φ_i = Σ_{r<i} s_r mod N`. The cyclic embedding removes
+   geometric bias — every starting position is occupied with equal
+   expected density across `i`.
+2. **Independent column permutations** are applied to the source and
+   target matrices `S → S'`, `T → T'`.
+3. **Intersection** `O = S' ∧ (T')^T` produces the routed
+   assignment. The cyclic mixing gives `E[L_j] ∝ t_j` by
+   construction.
+4. **Fused arithmetic evaluation** replaces matrix materialisation
+   with a wrapping-arithmetic interval test (`d = (x − start) mod
+N; keep iff d < len`). Total working memory drops from `O(N²)`
+   to `O(N)`.
+5. **Reservoir sampling** picks up to `k` qualifying matches per row
+   in `O(k)` memory.
+
+That cyclic-phase intersection is the geometric invariant. No
+optimisation step, no gate-statistics monitoring loop, no penalty
+coefficient — balance is a property of the construction.
 
 ---
 
@@ -140,291 +181,180 @@ src/
 └── python.rs     # PyO3 bindings (thin wrapper, no logic duplication)
 
 benches/
-└── bench.rs      # Criterion benchmarks (Phase Router vs hash, k sweep)
+└── bench.rs      # Criterion benchmarks (phase vs hash, k sweep)
 
 examples/
-├── bench.rs      # Quick CLI benchmark (Phase Router vs hash timing)
-└── moe_bench.rs  # MoE capacity-constrained benchmark (4 experiments)
+├── bench.rs            # quick CLI benchmark
+└── moe_bench.rs        # MoE capacity-constrained benchmark (4 experiments)
 
 python/
-└── phase_router.py  # High-level Python API (bit-packing, analysis)
+└── phase_router.py     # high-level Python API (bit-packing, analysis)
 
 scripts/
-├── demo.py       # Interactive demo with plots
-└── plot_moe.py   # MoE benchmark plot generation
+├── demo.py             # interactive demo with plots
+└── plot_moe.py         # MoE benchmark plot generation
+
+docs/
+├── paper.md            # full write-up (cf-invariance, anti-collapse, negative result)
+└── comparison.md       # hash-routing baseline methodology
 ```
 
 ---
 
 ## Usage
 
+### Rust
+
 ```rust
 use phase_router_rs::router::phase_router;
 
 let routes = phase_router(
-    &s_bits,
-    &t_bits,
-    n,
-    nb_words,
-    k,
-    &col_perm_s,
-    &col_perm_t,
-    seed,
+    &s_bits, &t_bits, n, nb_words, k,
+    &col_perm_s, &col_perm_t, seed,
 );
+// routes: Vec<i32> of size n * k; -1 marks empty slots.
 ```
 
-### Inputs
+For the MoE case where every expert has equal capacity, prefer the
+specialised path:
 
-- `s_bits`, `t_bits`: bit-packed matrices (`Vec<u64>`)
-- `n`: matrix size
-- `nb_words`: `(n + 63) / 64`
-- `k`: max outputs per row
-- `col_perm_*`: column permutations
-- `seed`: deterministic seed
+```rust
+use phase_router_rs::phase_router_uniform_dispatch;
 
-### Output
-
-- `Vec<i32>` of size `n * k`
-- Each row contains up to `k` column indices (`-1` if empty)
-
----
-
-## Benchmarks
-
-Run the quick CLI benchmark (Phase Router vs hash routing):
-
-```bash
-cargo run --release --example bench
+let routes = phase_router_uniform_dispatch(
+    n, e, k, base_density, seed, oversample,
+);
+// routes: Vec<i32> of size n * k.
 ```
 
-Run Criterion benchmarks with statistical analysis:
-
-```bash
-cargo bench
-```
-
-The benchmarks compare **Phase Router vs uniform hash routing** across sizes (N=64–4096) and fan-out values (k=1–16).
-
-Hash routing is faster, but Phase Router uses additional compute to align load with capacity.
-
-At small batch sizes the overhead is modest (~1–3×), while at large scale it grows — but this cost is typically outweighed by reduced dropped work in capacity-constrained systems.
-
-See the [MoE comparison](#-mixture-of-experts-moe-routing) for quality results.
-
-Run the full MoE capacity-constrained benchmark:
-
-```bash
-cargo run --release --example moe_bench
-```
-
----
-
-## 🧪 Current status
-
-- ✅ Correctness validated (basic tests)
-- ✅ Deterministic routing
-- ✅ Parallel execution via Rayon
-- ✅ Fully fused pipeline (no intermediate matrices)
-- ✅ Benchmark suite vs hash routing (CLI + Criterion)
-- ✅ Python bindings (PyO3 + maturin)
-- ✅ MoE capacity-constrained benchmarks
-
----
-
-## Optimizations applied
-
-### Structural optimizations
-
-- Fully fused pipeline — eliminates all n×n matrices
-- Analytical phase evaluation (no S′ / T′ materialization)
-- Reservoir sampling — O(k) memory, no candidate buffer
-- Python bindings via `pyo3` + `maturin`
-
-### Micro-optimizations
-
-- Modulo-free cyclic iteration
-- Branchless cyclic range check
-- Precomputed T lookups
-- Thread-local buffer reuse
-
-### Remaining opportunities
-
-- SIMD acceleration (`std::arch`) for hot loops
-- Optional `unsafe` fast paths (bounds check elimination)
-- Benchmark suite vs C++ implementation
-
----
-
-## Target use cases
-
-This implementation is best suited for:
-
-- **ML inference routing** (micro-batch load balancing)
-- **Distributed data partitioning**
-- **Cache / shard rebalancing**
-- **Bioinformatics (k-mer distribution)**
-- **Graph partitioning**
-
----
-
-## Mixture-of-Experts (MoE) Routing
-
-### The problem
-
-Naive routing wastes capacity.
-
-### The consequence
-
-Dropped tokens = wasted compute.
-
-### The fix
-
-Phase Router aligns load with capacity by construction.
-
-```
-Hash:          E[load_j] = k           (uniform, ignores capacity)
-Phase Router:  E[load_j] ∝ capacity_j  (capacity-aware by construction)
-```
-
-This emerges because both source mass and target capacity are embedded into the same cyclic phase space, and routing corresponds to interval intersection in that space.
-
-### Benchmark results
-
-We benchmark against uniform hash routing on N=1024 experts with heterogeneous capacities (10% at 8×, 20% at 2×, rest at 1×). Metric: **token survival rate** (fraction of routed tokens not dropped).
-
-| Scenario                           | Phase Router | Hash  | Advantage  |
-| ---------------------------------- | ------------ | ----- | ---------- |
-| Tight capacity (1.0× headroom)     | 87.9%        | 79.2% | **+8.7%**  |
-| Practical capacity (1.2× headroom) | 89.8%        | 79.2% | **+10.5%** |
-| High fan-out (k=16)                | 96.6%        | 77.6% | **+19.0%** |
-| Large scale (N=4096)               | 91.1%        | 79.0% | **+12.1%** |
-
-Key findings:
-
-- **10–19% higher token survival** across all tested configurations
-- **Advantage grows with fan-out _k_** — at k=16, Phase Router delivers 96.6% vs 77.6% (+19pp)
-- **~40% less overprovisioning needed** — Phase Router hits 90% survival at 1.2× headroom; hash needs ~2×
-- **Consistent across scale** — 10–14% advantage from N=256 to N=4096
-- **Advantage emerges with heterogeneity** — near-identical at uniform capacity, +10.5% at strong heterogeneity
-
-### When it matters most
-
-The advantage is largest when:
-
-- Expert capacities are **heterogeneous** (mixed GPU types, variable batch budgets)
-- Token drops are **expensive** (require recomputation or degrade model quality)
-- Overprovisioning budget is **limited** (can't afford 2× headroom)
-- Fan-out _k_ is **moderate to large** (k ≥ 4, as in Switch Transformer / GShard)
-
-> For the full benchmark methodology and results, see [`docs/comparison.md`](docs/comparison.md).
-
----
-
-## When to use this
-
-Use Phase Router when:
-
-- You have **skewed workloads**
-- You can process in **batches**
-- You need **fast recomputation**
-- You want **deterministic behavior**
-
-Avoid when:
-
-- You need real-time per-item decisions
-- You have multi-dimensional constraints (CPU + RAM + etc.)
-- You require strict optimality guarantees
-
----
-
-## Conceptual comparison
-
-| Method           | Speed      | Balance  | Deterministic | Global State |
-| ---------------- | ---------- | -------- | ------------- | ------------ |
-| Hashing          | ⭐⭐⭐⭐⭐ | ⭐⭐     | ✓             | ✗            |
-| Greedy           | ⭐⭐       | ⭐⭐⭐⭐ | ✓             | ✓            |
-| **Phase Router** | ⭐⭐⭐⭐   | ⭐⭐⭐⭐ | ✓             | ✗            |
-
----
-
-## Python Bindings
-
-The Rust kernel is exposed to Python via [PyO3](https://pyo3.rs) + [maturin](https://www.maturin.rs). The bindings are a **thin wrapper** — zero logic duplication, GIL released during compute.
-
-### Install
+### Python
 
 ```bash
 pip install maturin
 maturin develop --release
 ```
 
-### Quick start (high-level API)
-
 ```python
 import numpy as np
 import phase_router_rs
 
-# Bit-packed source/target matrices (flat u64 arrays)
-n = 1024
-nb_words = (n + 63) // 64
-s_bits = np.ones(n * nb_words, dtype=np.uint64) * 0xFFFFFFFFFFFFFFFF
-t_bits = np.ones(n * nb_words, dtype=np.uint64) * 0xFFFFFFFFFFFFFFFF
-
-# phase_router_auto generates permutations from seed internally
+# High-level (auto-generated permutations from seed)
 routes = phase_router_rs.phase_router_auto(s_bits, t_bits, n, k=4, seed=42)
-# routes: np.ndarray shape (n, k), dtype int32
-# routes[i] → up to k target indices for source i (-1 = empty)
-```
 
-### Low-level API (bring your own permutations)
-
-```python
-col_perm_s = np.random.permutation(n).astype(np.uint64)
-col_perm_t = np.random.permutation(n).astype(np.uint64)
-
-routes = phase_router_rs.phase_router(
-    s_bits, t_bits, n, nb_words, k=4,
-    col_perm_s, col_perm_t, seed=42,
+# MoE uniform-dispatch fast path
+routes = phase_router_rs.phase_router_uniform_dispatch(
+    n=8192, e=32, k=2, base_density=0.3, seed=42, oversample=4,
 )
+# routes: np.ndarray shape (n, k), dtype int32, -1 = empty slot
 ```
 
-### Performance notes
+The GIL is released during Rust compute, so Rayon parallelism works
+fully under Python. See `python/phase_router.py` for a higher-level
+wrapper that handles bit-packing and permutation generation.
 
-- **GIL is released** during Rust compute — Rayon parallelism works fully
-- **Returns 2D array** `(n, k)` — no reshape needed
-- **Use contiguous arrays**: `np.ascontiguousarray(arr, dtype=np.uint64)` to avoid silent copies
-- Routing cost is amortized by avoiding dropped-token recomputation
+---
 
-### Demo: Phase Router vs Hash Routing
+## Benchmarks
 
-A full interactive demo compares Phase Router against uniform hash routing on 512 experts with heterogeneous capacities:
+Quick CLI benchmark (phase vs hash):
 
 ```bash
-python scripts/demo.py
+cargo run --release --example bench
 ```
 
-The demo produces:
+Criterion benchmarks with statistical analysis:
 
-1. **Load distribution stats** — mean, std, CV, max/mean for both methods
-2. **Load–capacity correlation** — Phase Router targets ≈ 1.0, hash ≈ 0.0
-3. **Per-expert load tables** — top/bottom experts by capacity with load alignment
-4. **Token survival** after capacity enforcement — Phase Router drops fewer tokens
-5. **Capacity vs Load plot** (`plots/capacity_vs_load.png`) — Phase Router load rises diagonally with capacity; hash stays flat
-6. **Load/Capacity ratio plot** (`plots/load_capacity_ratio.png`) — Phase Router holds a flat ratio (balanced); hash slopes downward (overloads small experts, wastes large ones)
-
-The high-level Python API (`python/phase_router.py`) handles bit-packing and permutation generation so users never touch u64 arrays:
-
-```python
-from phase_router import route, hash_route, compute_loads
-
-routes = route(target_capacities=[1,1,1,8,8,2,2,1], n=8, k=4, seed=42)
-loads = compute_loads(routes, n=8)
+```bash
+cargo bench
 ```
 
-The demo shows that the Phase Router aligns load with capacity, while hashing ignores it.
+MoE capacity-constrained benchmark (the table above):
 
-Phase Router approximates E[load_j] ∝ capacity_j under a hard fan-out constraint (k),
-which slightly compresses extreme values.
+```bash
+cargo run --release --example moe_bench
+python scripts/plot_moe.py
+```
+
+Routing wall-time at `N = 8192, E = 32, k = 2` on an A10G:
+
+| router                     | route_time (ms / fwd) |
+| -------------------------- | --------------------: |
+| top-k + softmax + capacity |                  11.9 |
+| **phase uniform dispatch** |               **8.5** |
+
+Phase is ~28 % cheaper to invoke than the top-k stack at this scale.
+At small batch sizes the kernel overhead is more visible (~1 – 3×
+slower than raw hash), but capacity-aware behaviour reduces dropped
+work by enough to dominate the trade-off.
+
+---
+
+## Negative result: composing top-k with phase fails
+
+A natural-looking hybrid — top-k for affinity, phase-style per-expert
+quotas, soft fall-through to the 2nd/3rd/4th choice on overflow —
+fails catastrophically at 32 experts:
+
+| metric   | top-k (cf=1.0) | phase (cf=1.0) | balanced (cf=1.0) |
+| -------- | -------------: | -------------: | ----------------: |
+| val_ce   |          4.766 |          5.287 |             4.787 |
+| val_cv   |          0.144 |          0.100 |         **1.551** |
+| val_drop |        11.79 % |         0.58 % |       **61.91 %** |
+
+The mechanism: the learned gate collapses onto ~8 of 32 experts
+(`perm_entropy = 0.61`), the `top-(k+overflow) = top-4` candidate set
+lies entirely inside the popular subset, and the fall-through has
+nowhere to land. `cf = 2.0` does not rescue it: drop is still
+51.7 %.
+
+Phase routing is immune because it has no gate to collapse. Phase's
+invariances are **structural** — not portable into any hybrid that
+retains a learned gate over experts. Full analysis in §6 of
+[`docs/paper.md`](docs/paper.md).
+
+---
+
+## Conceptual comparison
+
+| primitive        | balance source             | causal?    | hyperparams    | failure mode          |
+| ---------------- | -------------------------- | ---------- | -------------- | --------------------- |
+| top-k + aux + cf | aux loss + capacity factor | yes        | `α`, `cf`, `k` | gate collapse w/o aux |
+| Expert Choice    | per-expert pick            | **no**     | `C`, `k`       | breaks AR semantics   |
+| BASE layers      | linear assignment          | yes (slow) | none           | `O(N²)` per layer     |
+| hash routing     | none (random)              | yes        | none           | capacity-blind        |
+| **phase (ours)** | bipartite construction     | yes        | `base_density` | CE cost ≈ 5 – 12 %    |
+
+The most relevant comparison is BASE: it also gives up a learned
+gate and accepts that balance is the contribution. We retain the
+gate as a routing **weight** (the softmax distribution is gathered at
+the chosen indices and renormalised), so phase routing plugs into the
+same training loop as top-k; we only replace the selection rule.
+
+---
+
+## Status
+
+- ✅ Correctness validated (unit + property tests in `tests/invariants.rs`)
+- ✅ Deterministic routing from a seed
+- ✅ Parallel execution via Rayon
+- ✅ Fully fused pipeline (no intermediate matrices, `O(N)` memory)
+- ✅ Python bindings (PyO3 + maturin), GIL released
+- ✅ MoE training experiments at 8 and 32 experts (TinyStories,
+  cf-invariance reproduced)
+- ✅ Negative result: greedy top-k + phase hybrid documented
+
+---
+
+## Further reading
+
+- [`docs/paper.md`](docs/paper.md) — full write-up: cf-invariance,
+  anti-collapse, the BalancedRouter negative result, balance ↔
+  specialisation antagonism, geometric-invariant framing.
+- [`docs/comparison.md`](docs/comparison.md) — hash-routing baseline
+  methodology and full survival tables.
+- `dev/findings_stress_sweep.md`, `dev/findings_cf_sweep_v2.md`,
+  `dev/findings_ensemble_probe.md` — primary-source findings notes
+  from each sweep.
 
 ---
 
@@ -438,26 +368,24 @@ MIT
 
 Contributions are welcome, especially around:
 
-- SIMD optimization
-- real-world benchmarking
-- integration examples
+- SIMD acceleration of the cyclic-interval inner loop
+- learned load-shaping heads layered _under_ phase (the natural
+  follow-up to the BalancedRouter negative result)
+- real-world integration examples (sharding, request routing)
 
 ---
 
 ## Summary
 
-Phase Router is:
+> Phase routing is a deterministic discrepancy-minimising balance
+> primitive whose operating behaviour is invariant to capacity
+> factor, immune to gate collapse by construction, and stable under
+> provisioning sweeps — at a 5 – 12 % cross-entropy cost that grows
+> with `E`. The contribution is the **substrate**, not the loss
+> number.
 
-> A fast, deterministic, low-skew routing primitive built on cyclic phase arithmetic which aligns load with capacity — without coordination or optimization..
-
-This Rust implementation delivers:
-
-- **Optimized** fully fused pipeline with zero matrix materialization
-- **O(n) memory** instead of O(n²)
-- **Highly parallel** row-independent computation
-- **Deterministic, reproducible** routing from any seed
-
-This enables fast, repeatable routing decisions in systems where traditional hashing causes load imbalance and greedy methods are too expensive.
+Balance and specialisation are antagonistic under sparse routing;
+phase routing picks balance and pays the affinity tax.
 
 ---
 

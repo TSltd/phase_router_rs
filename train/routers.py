@@ -377,3 +377,130 @@ class PhaseRouter(nn.Module):
         }
         self._step += 1
         return idx, weights, aux
+
+
+# ── Balanced Router (constrained-optimisation ensemble) ────────────────
+
+
+class BalancedRouter(nn.Module):
+    """Priority-ordered occupancy-aware admission router.
+
+    Solves *maximise affinity subject to per-expert occupancy constraints*
+    as a greedy assignment:
+
+        1. Compute top-(k + overflow) candidates per token by gate score.
+        2. Process tokens in descending max-affinity order.
+        3. Each token claims its highest-scoring candidate whose quota is
+           not yet full. Falls through to the 2nd / 3rd / ... candidate
+           on overflow rather than being dropped — this is the *soft*
+           admission process the design constraints require.
+        4. A slot is dropped (idx = -1) only when every candidate in the
+           token's (k + overflow)-deep list is at quota; in practice
+           this is < 0.5 % at any sensible (cf, overflow).
+
+    Reduces to top-k as cf → ∞ (quota becomes non-binding) and
+    approximates phase-uniform as cf → 1 (quota becomes tight). One
+    knob, same shape as Switch / GShard.
+
+    See `dev/ensemble_probe_plan.md` for the design rationale, the
+    pre-registered hypothesis grid, and the success criteria.
+    """
+
+    def __init__(
+        self,
+        n_experts: int,
+        capacity_factor: float = 1.25,
+        overflow: int = 2,
+        aux_loss_alpha: float = 0.0,   # 0 → no aux; quota is the constraint
+    ):
+        super().__init__()
+        if overflow < 0:
+            raise ValueError(f"overflow must be ≥ 0, got {overflow}")
+        self.n_experts = n_experts
+        self.capacity_factor = capacity_factor
+        self.overflow = overflow
+        self.aux_loss_alpha = aux_loss_alpha
+
+    @torch.no_grad()
+    def _select(
+        self, gate: torch.Tensor, k: int
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """Return (idx (N,k) int64, w_at_idx (N,k) float) on CPU.
+
+        Soft admission: descending priority, fall-through on quota
+        overflow. Determines selection only; differentiable weight
+        re-binding happens in `forward`.
+        """
+        N, E = gate.shape
+        k_cand = min(E, k + self.overflow)
+
+        # Candidate scores per token, descending. (N, k_cand)
+        top_w, top_idx = gate.topk(k_cand, dim=-1)
+
+        # Priority: most-confident tokens first.
+        priority = torch.argsort(-top_w[:, 0])
+
+        # Quota: same formula as Switch top-k. cf=1 ⇒ tight, cf=∞ ⇒ loose.
+        quota = max(1, math.ceil(self.capacity_factor * N * k / E))
+
+        top_idx_np = top_idx.cpu().numpy().astype(np.int64)
+        priority_np = priority.cpu().numpy().astype(np.int64)
+
+        loads = np.zeros(E, dtype=np.int64)
+        out_idx = np.full((N, k), -1, dtype=np.int64)
+
+        for tok in priority_np:
+            slot = 0
+            row = top_idx_np[tok]
+            for c in row:
+                if loads[c] < quota:
+                    out_idx[tok, slot] = c
+                    loads[c] += 1
+                    slot += 1
+                    if slot == k:
+                        break
+
+        idx_t = torch.from_numpy(out_idx)
+        return idx_t
+
+    def forward(self, logits: torch.Tensor, k: int):
+        N, E = logits.shape
+        t_route = time.perf_counter()
+        gate = F.softmax(logits, dim=-1)              # (N, E)
+
+        idx = self._select(gate.detach().cpu(), k).to(logits.device)
+        route_time_ms = (time.perf_counter() - t_route) * 1000.0
+
+        # Differentiable weight binding: gather softmax weights at the
+        # selected experts and renormalise per row. Dropped slots get
+        # zero weight (and idx = -1 keeps them out of the dispatch).
+        gather_idx = idx.clamp_min(0)
+        gathered = gate.gather(-1, gather_idx)
+        weights = gathered * (idx >= 0).float()
+        weights = weights / weights.sum(-1, keepdim=True).clamp_min(1e-9)
+
+        # Optional aux loss — disabled by default. The quota IS the
+        # constraint; an aux term would double-count. Exposed so we can
+        # ablate "balanced + aux" if the first sweep underperforms.
+        if self.aux_loss_alpha > 0:
+            with torch.no_grad():
+                one_hot = F.one_hot(idx.clamp_min(0), num_classes=E).float()
+                mask = (idx >= 0).unsqueeze(-1).float()
+                fraction = (one_hot * mask).sum(dim=(0, 1)) / (mask.sum() + 1e-9)
+            importance = gate.mean(dim=0)
+            aux_loss = self.aux_loss_alpha * E * (fraction.detach() * importance).sum()
+        else:
+            aux_loss = torch.tensor(0.0, device=logits.device)
+
+        capacity = _switch_capacity(N, E, k, self.capacity_factor)
+        dropped = (idx == -1).float().sum().item()
+        aux = {
+            "dropped_frac": dropped / max(1, N * k),
+            "load_cv": load_cv(idx, E),
+            "contig_frac": contig_frac(idx),
+            "perm_entropy": perm_entropy(idx, E),
+            "route_time_ms": route_time_ms,
+            "aux_loss": aux_loss,
+            "capacity": capacity,
+        }
+        return idx, weights, aux

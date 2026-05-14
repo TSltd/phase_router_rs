@@ -27,7 +27,7 @@ if str(HERE) not in sys.path:
 
 from data import get_tokenizer, windowed_batches  # noqa: E402
 from moe_model import MoELM, ModelConfig, count_params  # noqa: E402
-from routers import PhaseRouter, TopKRouter  # noqa: E402
+from routers import BalancedRouter, PhaseRouter, TopKRouter  # noqa: E402
 
 
 def set_seed(seed: int):
@@ -56,6 +56,16 @@ def make_router_factory(name: str, cfg: dict):
             capacity_factor=cfg["capacity_factor"],
             seed=cfg["seed"],
             capacity_mode=cfg.get("phase_capacity_mode", "uniform"),
+        )
+    elif name == "balanced":
+        # Constrained-optimisation ensemble: top-k affinity scores +
+        # phase-style per-expert quotas with soft fall-through.
+        # See `dev/ensemble_probe_plan.md`.
+        return lambda: BalancedRouter(
+            n_experts=cfg["n_experts"],
+            capacity_factor=cfg["capacity_factor"],
+            overflow=cfg.get("balanced_overflow", 2),
+            aux_loss_alpha=cfg.get("balanced_aux_loss_alpha", 0.0),
         )
     raise ValueError(f"unknown router: {name}")
 
